@@ -1,0 +1,14 @@
+{
+  "_comment": "profile-local Honcho config（#5947 Bug D の fallback 回避のため必ず profile 直下）。クラウド honcho.dev。キー名は配備時に `management honcho status` で要確認。",
+  "provider": "honcho",
+  "recallMode": "hybrid",
+  "sessionStrategy": "global",
+  "pinUserPeer": true,
+  "userPeerAliases": {
+    "U9R35H06L": "toda"
+  },
+  "observedPeers": {
+    "U09T44VEZM1": "y-matsunaga"
+  },
+  "_peers_note": "§5: peer=人物像を貯める単位。toda=対話相手(裁定『促す/流す』を貯める固定peer＝調教が効く所)。y-matsunaga=観測対象peer(相場/尺の見誤り癖/報告の丁寧さを貯める＝§8評価の仕込み。タダで仕込めるので最初から据える)。横展開時に観測対象peerを足す。"
+}

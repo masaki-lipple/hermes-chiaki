@@ -1,0 +1,18 @@
+# secrets — never commit
+.env
+profile/.env
+secrets.env
+# local validation data (real Lipple data — keep off GitHub)
+fixtures/
+tests/
+# runtime state (regenerated on the box)
+profile/state/channel_timers.json
+profile/state/plan_*.json
+profile/state/actuals_*.json
+profile/state/findings.jsonl
+profile/state/pending_approvals.json
+profile/state/rulings.jsonl
+# misc
+__pycache__/
+*.pyc
+.DS_Store

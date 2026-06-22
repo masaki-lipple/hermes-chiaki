@@ -1,0 +1,6 @@
+{
+  "_note": "承認ゲートのスイッチ。サイレント期=全て true。卒業時に戸田が false へ。",
+  "quality_nudges_require_approval": true,
+  "stall_nudge_wording_require_approval": true,
+  "notion_writes_require_approval": true
+}

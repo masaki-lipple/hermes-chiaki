@@ -1,0 +1,34 @@
+# Slack 専用アプリ「chiaki」manifest（貼り付け用）
+# api.slack.com/apps → Create New App → "From an app manifest" → Lippleワークスペース選択 → これを貼る
+# 注: App-Level Token(xapp-) は manifest では作られない。作成後に Basic Information → App-Level Tokens で
+#     scope=connections:write のトークンを作る（下記の手順③参照）。
+display_information:
+  name: chiaki
+  description: Lipple タスク管理脳（観測・促し）
+  background_color: "#2b2d31"
+features:
+  bot_user:
+    display_name: chiaki
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write          # スレッド返信・投稿
+      - groups:history      # private チャンネルの履歴読取（必須：監視4chは全てprivate）
+      - groups:read         # private チャンネル情報
+      - channels:history    # 念のため（public化された場合）
+      - im:history          # 戸田さんとのDM
+      - im:read
+      - im:write
+      - users:read          # slack_user_id ↔ 人物 解決
+      - files:read          # ノート画像・添付の存在把握
+      - app_mentions:read    # @chiaki 検知
+      - reactions:read       # スタンプ観測（任意）
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.groups      # private チャンネルの新規投稿（Socket Mode で受信）
+      - message.im          # DM
+      - app_mention
+  socket_mode_enabled: true   # 公開URL不要（VPS にインバウンドを開けない方針と整合）
+  token_rotation_enabled: false

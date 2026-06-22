@@ -1,0 +1,64 @@
+# Hermes profile: management (chiaki) — config template
+# 配備先: ~/.hermes/profiles/management/config.yaml
+# 秘密は .env（${VAR} 参照）。キー名は配備時に `management config check` / docs で要確認。
+
+model:
+  provider: anthropic
+  default: claude-sonnet-4-6        # 判断・チャット
+  context_length: 200000
+
+prompt_caching:
+  cache_ttl: "1h"                   # 常駐観測者なので 1h（SOUL+skills 固定プレフィックスを ~0.1x に）
+
+# 高頻度の補助タスクは Haiku に寄せてコスト削減（観測本体のLLM起動は判断時のみ）
+auxiliary:
+  compression:      { provider: anthropic, model: claude-haiku-4-5 }
+  title_generation: { provider: anthropic, model: claude-haiku-4-5 }
+  approval_scoring: { provider: anthropic, model: claude-haiku-4-5 }
+  mcp_tool_routing: { provider: anthropic, model: claude-haiku-4-5 }
+
+# ── Slack gateway = #8902（戸田の対話/承認）だけを event 駆動にする（コスト） ──
+gateway:
+  unauthorized_dm_behavior: "ignore"
+  slack:
+    require_mention: false
+    free_response_channels:
+      - "C0BCE19BN2G"               # #8902-chiaki-management のみ（戸田の裁定を拾う）
+    allowed_channels:
+      - "C09U4T1BBU0"               # #5035-yu-pdca（観測・承認後スレッド返信の宛先）
+      - "C045C1ZBX26"               # #a027-日本自動ドア株式会社（観測・停滞通知の宛先）
+      - "C0BC6PPG013"               # #5902-chiaki-pdca（chiaki 作業ログ）
+      - "C0BCE19BN2G"               # #8902-chiaki-management（窓口）
+    extra:
+      reply_in_thread: true
+      reply_broadcast: false
+    channel_skill_bindings:
+      "C0BCE19BN2G": ["apply-ruling"]
+    # 監視2chは free_response にしない＝gateway を起こさない。観測は cron バッチで行う。
+
+# ── MCP ──
+mcp_servers:
+  # 履歴/タイムスタンプ読取（組込 messaging は send_message のみ）
+  slack:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-slack"]   # ※実パッケージは配備時に確定
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+    tools:
+      include: [slack_read_channel, slack_read_thread, slack_send_message]
+  # Notion（read + 限定 write）。property 単位制限は notion-write スキルで担保。
+  notion:
+    command: "npx"
+    args: ["-y", "@notionhq/notion-mcp-server"]
+    env:
+      NOTION_TOKEN: "${NOTION_INTEGRATION_TOKEN}"
+    tools:
+      include: [API-post-search, API-retrieve-a-page, API-post-database-query, API-patch-page]
+
+# ── 記憶 ──
+memory:
+  provider: honcho
+  enabled: true
+  write_approval: true              # 初期は永続化を戸田が検閲
+
+# 注: モデルIDは配備時に現行を再確認。MCPの cron セッション可否は実機検証（不可なら scripts で Web API 直）。
