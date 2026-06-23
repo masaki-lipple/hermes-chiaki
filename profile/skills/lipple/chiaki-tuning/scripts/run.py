@@ -48,37 +48,46 @@ def _classify(text: str):
         return None
 
 
-def main():
-    ch = runtime.CH_CHIAKI_MGMT
-    recent = source.read_recent(ch, limit=50)
-    if not recent:
-        print("[tuning] no messages")
-        return
+def _candidates(cur: dict):
+    """戸田さんのフィードバック候補 [(msg, ack_root_ts, channel, force_skill)] を集める。
+    #8902: トップレベル＋提案以外のスレッド返信（skill は Haiku 分類）。
+    #5902(PDCA): chiaki の PDCA 投稿への返信（skill=pdca 固定＝PDCA文面の調整はここで行う）。"""
+    mgmt, pdca = runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA
     pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
     open_threads = {ts for ts, it in pend.items()
                     if it.get("status") in ("pending", "awaiting_completion")}
-    cur = runtime.load_json("tuning_cursor.json", {})
-    since = float(cur.get(ch, 0.0))
-    # 戸田さんのフィードバック＝トップレベル投稿＋chiakiのスレッド内返信（提案スレ=裁定はapply-ruling領分で除外）
-    cand = []  # (msg, ack_root_ts)
-    for m in recent:
-        if m["user_id"] == runtime.TODA and m["ts_float"] > since:
-            cand.append((m, m["ts"]))
+    cand = []
+    since_m = float(cur.get(mgmt, 0.0))
+    for m in source.read_recent(mgmt, limit=50):
+        if m["user_id"] == runtime.TODA and m["ts_float"] > since_m:
+            cand.append((m, m["ts"], mgmt, None))
         if m.get("thread_replies") and m["ts"] not in open_threads:
-            for r in source.read_thread(ch, m["ts"]):
-                if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since:
-                    cand.append((r, m["ts"]))  # ack はそのスレッドへ返す
+            for r in source.read_thread(mgmt, m["ts"]):
+                if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_m:
+                    cand.append((r, m["ts"], mgmt, None))
+    since_p = float(cur.get(pdca, 0.0))
+    for m in source.read_recent(pdca, limit=50):
+        if m.get("thread_replies"):
+            for r in source.read_thread(pdca, m["ts"]):
+                if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_p:
+                    cand.append((r, m["ts"], pdca, "pdca"))
+    return cand
+
+
+def main():
+    cur = runtime.load_json("tuning_cursor.json", {})
+    cand = _candidates(cur)
     if not cand:
         print("[tuning] no new feedback")
         return
     tuning = runtime.load_json("tuning.json", {})
-    maxts, learned = since, 0
-    for m, root in sorted(cand, key=lambda x: x[0]["ts_float"]):
-        maxts = max(maxts, m["ts_float"])
+    maxts, learned = {}, 0
+    for m, root, ch, force_skill in sorted(cand, key=lambda x: x[0]["ts_float"]):
+        maxts[ch] = max(maxts.get(ch, float(cur.get(ch, 0.0))), m["ts_float"])
         c = _classify(m["text"])
         if not c or not c.get("is_feedback"):
             continue
-        skill = c.get("skill") if c.get("skill") in SKILLS else "general"
+        skill = force_skill or (c.get("skill") if c.get("skill") in SKILLS else "general")
         directive = (c.get("directive") or "").strip()
         if not directive:
             continue
@@ -88,7 +97,8 @@ def main():
         source.post_thread_reply(ch, root, f"<@{runtime.CHIAKI_SELF}>\n{ack}")
         learned += 1
     runtime.save_json("tuning.json", tuning)
-    cur[ch] = maxts
+    for ch, mx in maxts.items():
+        cur[ch] = mx
     runtime.save_json("tuning_cursor.json", cur)
     print(f"[tuning] learned={learned}")
 
