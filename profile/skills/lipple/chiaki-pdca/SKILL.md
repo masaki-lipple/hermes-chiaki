@@ -1,6 +1,6 @@
 ---
 name: chiaki-pdca
-description: chiaki 自身の作業ログを #5902-chiaki-pdca に、チームと同じ3行ルール（報告/詳細/ラポート）で書く。松永さんと対称。意味ある単位だけ。
+description: Chiaki AI 自身の作業ログを #5902-chiaki-pdca に、チームと同じ3行ルール（報告/詳細/ラポート）で書く。松永さんと対称。意味ある単位だけ。
 metadata:
   hermes:
     tags: [self-report, llm]
@@ -8,7 +8,7 @@ metadata:
 
 # chiaki-pdca（§6 自己PDCA・松永さんと対称）
 
-chiaki は「観測もする現場メンバー」として、自分のPDCAを `#5902-chiaki-pdca`（`C0BC6PPG013`）に回す。**毎秒の独り言にしない**——意味のある単位だけ。
+Chiaki AI は「観測もする現場メンバー」として、自分のPDCAを `#5902-chiaki-pdca`（`C0BC6PPG013`）に回す。**毎秒の独り言にしない**——意味のある単位だけ。
 
 ## いつ書くか
 - **観測開始**（朝・cron `0 9`）: 今日観測する対象・狙い。**top-level ＋ `@channel`**。
