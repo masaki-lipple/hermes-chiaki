@@ -54,20 +54,34 @@ def main():
     for u in ev["unmatched"]:
         runtime.record_finding("reconcile_fail", {"channel": ch, "detail": u})
 
-    # 表記 Layer1（新着のみ）
+    # 表記 Layer1（新着のみ・投稿元＋スレッド返信。bot/chiaki は対象外）
     rules = _load_rules()
+    bots = {runtime.GCP_TASK_BOT, runtime.CHIAKI_SELF}
     n_notation = 0
-    for m in today_msgs:
-        if m["ts_float"] <= last_processed:
-            continue
-        for issue in observe.notation_check(m["text"], rules):
+    max_seen = last_processed
+
+    def _scan(msg):
+        nonlocal n_notation
+        for issue in observe.notation_check(msg["text"], rules):
             n_notation += 1
             if policy.get("quality_nudges_require_approval", True):
                 runtime.record_finding("notation", {
-                    "channel": ch, "msg_ts": m["ts"], "msg_dt": m["datetime"],
-                    "issue": issue, "excerpt": m["text"][:80]})
+                    "channel": ch, "msg_ts": msg["ts"], "msg_dt": msg["datetime"],
+                    "issue": issue, "excerpt": msg["text"][:80]})
 
-    t["last_processed_ts"] = max(m["ts_float"] for m in today_msgs)
+    for m in today_msgs:
+        if m["ts_float"] > last_processed and m["user_id"] not in bots:
+            _scan(m)
+        max_seen = max(max_seen, m["ts_float"])
+        # スレッド返信内の表記も検査（投稿元だけでなくスレッド内も拾う）
+        if m.get("thread_replies"):
+            for r in source.read_thread(ch, m["ts"]):
+                if r["ts"] == m["ts"] or r["ts_float"] <= last_processed or r["user_id"] in bots:
+                    continue
+                _scan(r)
+                max_seen = max(max_seen, r["ts_float"])
+
+    t["last_processed_ts"] = max(max_seen, max(m["ts_float"] for m in today_msgs))
     timers[ch] = t
     runtime.save_json("channel_timers.json", timers)
 

@@ -17,7 +17,7 @@ metadata:
 
 ## 承認・前提
 - サイレント期は `policy.json: notion_writes_require_approval:true`＝書き込みも propose→戸田承認後。
-- **前提ブロッカー**: タスクDB（Tasks マニャーナ）が統合に共有されるまで 404。共有後に DB ID を `.env`/環境変数へ。**それまでは観測本体に影響なし**（Slack+local で完結。配管が先・補完は後）。
+- タスクDB（**🎯 タスク_DB**, ID `331980d4-f840-800b-8bde-f6669422aeb1`）は統合に**共有済み＝404解消**。書き込めるのは status/sync_source を除くメタ（カテゴリー/工数レベル/優先度）のみ・承認後。観測本体は Slack+local で完結。
 
 ## 使い方
 `notion_write.py <page_id> '{"カテゴリー":"...","工数":1.6}'` → 禁止プロパティが含まれていれば**実行前に拒否**。`--no-overwrite-category` で既存カテゴリーを保護。

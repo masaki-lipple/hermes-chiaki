@@ -48,5 +48,5 @@ Notion: メンバーDB `028c62ed-3b31-495c-a5a9-33f1c7c7b595` / 用語辞書DB `
 Honcho peer は2つ: `toda`(対話・裁定を貯める) ＋ `y-matsunaga`(観測対象・§8評価の仕込み)。
 
 ## 🚩 配備前メモ
-- Notion タスクDB（Tasks マニャーナ）404 は **Notion 書き戻しのみ**を止める。観測本体は Slack+local 完結＝**Slackパイロット先行**、Notion補完は DB共有後（配管が先・補完は後）。
+- Notion タスクDB（**🎯 タスク_DB**, ID `331980d4-f840-800b-8bde-f6669422aeb1`）は統合に**共有済み＝404解消**。書き戻し（status/sync_source 以外のメタのみ・承認後）は可能。観測本体は Slack+local 完結。
 - 仕様の `#8902-chiaki-pdca` は実体 `#5902-chiaki-pdca`（要最終確認）。
