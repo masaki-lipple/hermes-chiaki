@@ -116,22 +116,49 @@ def _revise(text: str, skill: str, instruction: str = "") -> str:
     return out if (out and out.count("\n") == n and out != text) else ""
 
 
-def _maybe_edit_root(ch: str, root: str, skill: str, instruction: str = ""):
-    """指摘対象＝スレッド内の最新の実質的な chiaki 投稿（自分のack＝<@CHIAKI_SELF>始まりは除く）を編集。"""
+_PERMALINK = re.compile(r"/archives/(C[A-Z0-9]+)/p(\d{10})(\d{6})")
+
+
+def _resolve_link(raw: str):
+    """戸田さんのメッセージ中の Slack パーマリンク → (channel, ts, thread_root)。無ければ None。"""
+    mm = _PERMALINK.search(raw or "")
+    if not mm:
+        return None
+    tch, ts = mm.group(1), mm.group(2) + "." + mm.group(3)
+    tm = re.search(r"thread_ts=([\d.]+)", raw)
+    return tch, ts, (tm.group(1) if tm else ts)
+
+
+def _edit_post(tch: str, tts: str, parent: str, skill: str, instruction: str) -> bool:
+    """tch/tts の chiaki 投稿を、指示＋tuning で最小修正（chat.update）。編集したら True。"""
+    msg = next((x for x in source.read_thread(tch, parent) if x.get("ts") == tts), None)
+    if not msg or msg.get("user_id") != runtime.CHIAKI_SELF:
+        return False
+    edit_skill = "pdca" if tch == runtime.CH_CHIAKI_PDCA else skill
+    revised = _revise(msg.get("text", ""), edit_skill, instruction)
+    if revised and revised.strip() != (msg.get("text", "") or "").strip():
+        source.update_message(tch, tts, revised)
+        print(f"[tuning] edited post ch={tch} ts={tts}")
+        return True
+    return False
+
+
+def _maybe_edit_root(ch: str, root: str, skill: str, instruction: str = "", raw: str = ""):
+    """編集対象を決めて修正する。
+    1) 戸田さんのメッセージに Slack リンクがあれば、そのリンク先の投稿（チャンネル跨ぎ可）。
+    2) なければ、同スレッド内の最新の実質的 chiaki 投稿（ack＝<@CHIAKI_SELF>始まりは除く）。"""
+    resolved = _resolve_link(raw)
+    if resolved:
+        tch, tts, parent = resolved
+        return _edit_post(tch, tts, parent, skill, instruction)
     self_tag = f"<@{runtime.CHIAKI_SELF}>"
     posts = [m for m in source.read_thread(ch, root)
              if m.get("user_id") == runtime.CHIAKI_SELF
              and not (m.get("text") or "").lstrip().startswith(self_tag)]
     if not posts:
         return False
-    target = posts[-1]  # 最新の実質投稿（提案/完了通知/PDCA等。ack は除外）
-    edit_skill = "pdca" if ch == runtime.CH_CHIAKI_PDCA else skill
-    revised = _revise(target.get("text", ""), edit_skill, instruction)
-    if revised and revised.strip() != (target.get("text", "") or "").strip():
-        source.update_message(ch, target["ts"], revised)
-        print(f"[tuning] edited post ch={ch} ts={target['ts']}")
-        return True
-    return False
+    t = posts[-1]
+    return _edit_post(ch, t["ts"], root, skill, instruction)
 
 
 def _candidates(cur: dict):
@@ -180,7 +207,7 @@ def main():
                 continue
             tuning.setdefault(skill, []).append({"directive": directive, "ts": runtime.now_ts()})
             tuning[skill] = tuning[skill][-CAP:]
-            edited = _maybe_edit_root(ch, root, skill, directive)  # 今回の指示で対象投稿を実際に編集
+            edited = _maybe_edit_root(ch, root, skill, directive, m["text"])  # 今回の指示で対象投稿を実際に編集
             ack = "修正しました。" if edited else ((c.get("ack") or "").strip() or "承知しました。今後反映します。")
             source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{ack}")  # やりとり相手=戸田さん宛て
             acted += 1
