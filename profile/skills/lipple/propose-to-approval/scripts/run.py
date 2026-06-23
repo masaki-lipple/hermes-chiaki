@@ -14,6 +14,13 @@ from lib import runtime, source, observe  # noqa: E402
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
 KINDS = ("notation", "typo", "stall")
 KINDJP = {"notation": "表記", "typo": "誤字", "stall": "停滞"}
+DIV = "ーーーーー"
+# 監視チャンネル → 対象者（apply-ruling が本物の @メンションで使う / プレビューは表示名のみ）
+CH_TARGET = {"C09U4T1BBU0": ("U09T44VEZM1", "松永さん")}
+
+
+def _target(channel: str):
+    return CH_TARGET.get(channel, ("", "担当者"))
 
 
 def _permalink(channel: str, ts: str) -> str:
@@ -59,20 +66,28 @@ def main():
         draft = _draft(f, rules)
         iss = f.get("issue", {}) or {}
         link = _permalink(f.get("channel", ""), f.get("msg_ts", ""))
+        found = iss.get("found", f.get("task", ""))
+        suggest = iss.get("suggest", "")
+        kenchi = f"{found} → {suggest}" if suggest else found
+        tgt_id, tgt_name = _target(f.get("channel", ""))
         proposal = (
-            f"<@{runtime.TODA}> 【提案 / {KINDJP[f['kind']]}】\n"
-            f"対象: {link or f.get('channel', '')}　{f.get('msg_dt', '')}\n"
-            f"検知: {iss.get('found', f.get('task', ''))}"
-            + (f" → {iss.get('suggest', '')}" if iss.get('suggest') else "") + "\n"
-            f"文面案（松永さんへ）: {draft}\n"
-            f"→ このスレッドに GO / 却下 / 文面修正 でお願いします。"
+            f"<@{runtime.TODA}>\n"
+            f"提案：{KINDJP[f['kind']]}\n"
+            f"対象：{link or f.get('channel', '')}\n"
+            f"検知：{kenchi}\n\n"
+            f"{DIV}\n\n"
+            f"@{tgt_name}\n"          # ← プレビュー（プレーン文字・松永さんに通知は飛ばない）
+            f"{draft}\n\n"
+            f"{DIV}\n\n"
+            f"このスレッドに GO・却下・文面修正 の指示をお願いします。"
         )
         res = source.post_message(runtime.CH_CHIAKI_MGMT, proposal)
         ts = res.get("ts") if isinstance(res, dict) else None
         if ts:
             pending.setdefault("items", {})[ts] = {
                 "finding_kind": f["kind"], "source_channel": f.get("channel"),
-                "source_ts": f.get("msg_ts"), "draft": draft, "status": "pending"}
+                "source_ts": f.get("msg_ts"), "draft": draft,
+                "target_user_id": tgt_id, "target_name": tgt_name, "status": "pending"}
         f["status"] = "proposed"
         posted += 1
     if posted:
