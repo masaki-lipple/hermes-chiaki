@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
 from lib import observe, runtime, source  # noqa: E402
 
+TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
 # 固定フォールバック文（Haiku 生成が失敗した時に必ず出す）
 FALLBACK_BODY = "最後のご報告から{gap}分経過しています。進捗報告お願いします！"
 
@@ -70,14 +71,23 @@ def main():
     last = today_msgs[-1]
     body = _compose(dec["gap_min"], now)
     text = f"<@{last['user_id']}>\n{body}"
-    source.post_thread_reply(ch, dec["target_ts"], text)
+    res = source.post_thread_reply(ch, dec["target_ts"], text)
+    nudge_ts = res.get("ts") if isinstance(res, dict) else None
     # 連打防止フラグ
     t["already_reminded_after_ts"] = last["ts_float"]
     timers[ch] = t
     runtime.save_json("channel_timers.json", timers)
-    # 控えを #8902 へ
-    source.post_message(runtime.CH_CHIAKI_MGMT,
-                        f"[リマインド控え] {ch} の最終投稿({last['datetime']})から{int(dec['gap_min'])}分無音 → スレッドで1回促しました。")
+    # 控えを #8902 へ（提案と同体裁・対象=チャンネルURL・末尾に促した投稿への deep link）
+    ch_url = f"https://{TEAM}.slack.com/archives/{ch}"
+    notice = (f"<@{runtime.TODA}>\n"
+              f"報告：リマインド控え\n"
+              f"対象：{ch_url}\n\n"
+              f"最終投稿（{last['datetime']}）から{int(dec['gap_min'])}分無音 → スレッドで1回促しました。")
+    if nudge_ts:
+        link = (f"https://{TEAM}.slack.com/archives/{ch}/p{nudge_ts.replace('.', '')}"
+                f"?thread_ts={dec['target_ts']}&cid={ch}")
+        notice += f"\n\n{link}"
+    source.post_message(runtime.CH_CHIAKI_MGMT, notice)
     print(f"[silence] fired: gap={dec['gap_min']}min target={dec['target_dt']}")
 
 
