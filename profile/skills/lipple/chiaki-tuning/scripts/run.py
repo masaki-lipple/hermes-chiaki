@@ -227,11 +227,15 @@ def main():
                     "ts": runtime.now_ts(), "channel": ch, "thread": root,
                     "text": m["text"], "directive": (c.get("directive") or "").strip(),
                     "notion_url": page_url})
-                tail = f"\n{page_url}" if page_url else ""
-                msg = ("ご指摘ありがとうございます！\n"
-                       "この内容はコード対応が必要なので、変更リクエストとして記録しました。"
-                       "Claude Code で対応します。" + tail)
-                source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(msg)}")
+                if page_url:  # 保存できた時だけ「保存しました」と言う（嘘をつかない）
+                    msg = ("上記の指示はSlackのやりとりでは対応できないので、"
+                           "AIコーディングエージェントをお使いください！NotionのDBに保存しました。")
+                    body = f"<@{runtime.TODA}>\n{runtime.ensure_punct(msg)}\n\n{page_url}"
+                else:
+                    msg = ("上記の指示はSlackのやりとりでは対応できないので、"
+                           "AIコーディングエージェントをお使いください！")
+                    body = f"<@{runtime.TODA}>\n{runtime.ensure_punct(msg)}"
+                source.post_thread_reply(ch, root, body)
                 acted += 1
                 continue
             skill = c.get("skill") if c.get("skill") in SKILLS else "general"
