@@ -109,7 +109,8 @@ def main():
             "ts": runtime.now_ts(), "thread_ts": tts, "verdict": verdict,
             "kind": it.get("finding_kind", ""), "original": draft,
             "final_text": final, "ruling_text": ruling_text})
-        source.post_thread_reply(runtime.CH_CHIAKI_MGMT, tts, f"<@{runtime.TODA}>\n{report}")  # @戸田 事後報告
+        # 事後報告＝処理/独り言なのでセルフメンション（@Chiaki AI）。戸田さんは確認要件ではないのでpingしない
+        source.post_thread_reply(runtime.CH_CHIAKI_MGMT, tts, f"<@{runtime.CHIAKI_SELF}>\n{report}")
         acted += 1
     if acted:
         runtime.save_json("pending_approvals.json", pend)

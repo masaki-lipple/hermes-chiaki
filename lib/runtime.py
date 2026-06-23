@@ -21,6 +21,7 @@ CH_CHIAKI_PDCA = "C0BC6PPG013"
 CH_CHIAKI_MGMT = "C0BCE19BN2G"
 TODA = "U9R35H06L"
 GCP_TASK_BOT = "U0BBZ3B3UNS"
+CHIAKI_SELF = "U0BCCMPKD54"  # 新Bot「Chiaki AI」の user_id。処理・独り言はこれでセルフメンション
 
 
 def now_ts() -> float:

@@ -79,7 +79,8 @@ def main():
     runtime.save_json("channel_timers.json", timers)
     # 控えを #8902 へ（提案と同体裁・対象=チャンネルURL・末尾に促した投稿への deep link）
     ch_url = f"https://{TEAM}.slack.com/archives/{ch}"
-    notice = (f"<@{runtime.TODA}>\n"
+    # リマインド控え＝処理/独り言なのでセルフメンション（@Chiaki AI）。戸田さんはpingしない
+    notice = (f"<@{runtime.CHIAKI_SELF}>\n"
               f"報告：リマインド控え\n"
               f"対象：{ch_url}\n\n"
               f"最終投稿（{last['datetime']}）から{int(dec['gap_min'])}分無音 → スレッドで1回促しました。")
