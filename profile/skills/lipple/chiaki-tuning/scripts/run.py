@@ -124,13 +124,15 @@ def _maybe_edit_root(ch: str, root: str, skill: str, instruction: str = ""):
              if m.get("user_id") == runtime.CHIAKI_SELF
              and not (m.get("text") or "").lstrip().startswith(self_tag)]
     if not posts:
-        return
+        return False
     target = posts[-1]  # 最新の実質投稿（提案/完了通知/PDCA等。ack は除外）
     edit_skill = "pdca" if ch == runtime.CH_CHIAKI_PDCA else skill
     revised = _revise(target.get("text", ""), edit_skill, instruction)
     if revised and revised.strip() != (target.get("text", "") or "").strip():
         source.update_message(ch, target["ts"], revised)
         print(f"[tuning] edited post ch={ch} ts={target['ts']}")
+        return True
+    return False
 
 
 def _candidates(cur: dict):
@@ -179,14 +181,14 @@ def main():
                 continue
             tuning.setdefault(skill, []).append({"directive": directive, "ts": runtime.now_ts()})
             tuning[skill] = tuning[skill][-CAP:]
-            ack = (c.get("ack") or "").strip() or f"承知しました。{skill} に反映します。"
-            source.post_thread_reply(ch, root, f"<@{runtime.CHIAKI_SELF}>\n{ack}")
-            _maybe_edit_root(ch, root, skill, directive)  # 指摘対象の実質投稿を、今回の指示で編集
+            edited = _maybe_edit_root(ch, root, skill, directive)  # 今回の指示で対象投稿を実際に編集
+            ack = "修正しました。" if edited else ((c.get("ack") or "").strip() or "承知しました。今後反映します。")
+            source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{ack}")  # やりとり相手=戸田さん宛て
             acted += 1
         elif typ == "question":
             ans = _answer(m["text"], ch, root)
             if ans:
-                source.post_thread_reply(ch, root, f"<@{runtime.CHIAKI_SELF}>\n{ans}")
+                source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{ans}")  # 戸田さん宛て
                 acted += 1
     if tuning:
         runtime.save_json("tuning.json", tuning)
