@@ -105,7 +105,9 @@ def _compose(mode: str, date: str, since: float):
         parts = [p.strip() for p in body.split(sep) if p.strip()]
         if len(parts) == 3:
             return "\n".join(parts)
-    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    body = body.rstrip("|｜　 \t\n")  # 末尾の区切り残骸（|||等）を除去
+    lines = [ln.strip() for ln in body.splitlines()
+             if ln.strip() and set(ln.strip()) - set("|｜")]  # 区切りだけの行も除く
     return "\n".join(lines) if len(lines) == 3 else body
 
 
