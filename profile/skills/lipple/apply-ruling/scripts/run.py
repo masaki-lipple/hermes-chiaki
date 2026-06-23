@@ -84,7 +84,7 @@ def main():
             "ts": runtime.now_ts(), "thread_ts": tts, "verdict": verdict,
             "kind": it.get("finding_kind", ""), "original": draft,
             "final_text": final, "ruling_text": ruling_text})
-        source.post_thread_reply(runtime.CH_CHIAKI_MGMT, tts, report)  # #8902 へ事後報告
+        source.post_thread_reply(runtime.CH_CHIAKI_MGMT, tts, f"<@{runtime.TODA}>\n{report}")  # #8902 へ事後報告（@戸田）
         acted += 1
     if acted:
         runtime.save_json("pending_approvals.json", pend)

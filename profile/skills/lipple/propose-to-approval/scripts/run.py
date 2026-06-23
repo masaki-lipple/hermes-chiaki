@@ -14,7 +14,6 @@ from lib import runtime, source, observe  # noqa: E402
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
 KINDS = ("notation", "typo", "stall")
 KINDJP = {"notation": "表記", "typo": "誤字", "stall": "停滞"}
-DIV = "ーーーーー"
 # 監視チャンネル → (user_id, 表示名)。apply-ruling は user_id で本物の @メンション、
 # 提案プレビューは表示名を太字（承認前に対象者へ通知を飛ばさない）。
 CH_TARGET = {"C09U4T1BBU0": ("U09T44VEZM1", "Yu Matsunaga")}
@@ -59,8 +58,10 @@ def _draft(f: dict, rules: dict) -> str:
             lines = "\n".join(f"- 案『{r['original']}』→ 戸田さん採用『{r['corrected']}』" for r in ex)
             shot = ("\n以下は戸田さんが過去に直した例。言い回し・長さ・温度感をこの傾向に寄せる"
                     "（内容は今回の指摘に合わせる。例文の固有名や語はそのまま流用しない）:\n" + lines)
-        prompt = (f"松永さんへ送る指摘の文面案を1〜2文で書いてください。内容: {base} "
-                  f"対象報告の抜粋: {f.get('excerpt', '')[:60]}。理由を一言添える。宛名(@)は付けず本文だけ。" + shot)
+        prompt = (f"松永さんへ送る指摘の文面案を書いてください。内容: {base} "
+                  f"対象報告の抜粋: {f.get('excerpt', '')[:60]}。理由を一言添える。"
+                  f"最後に『修正したらメンションで報告ください。』の主旨を必ず一文添える。"
+                  f"宛名(@)は付けず本文だけ・全体2〜3文。" + shot)
         # 注: 提案文は誤例「sns」等を説明上わざと含むので、ここでは自己チェック(apply_notation_fixes)を掛けない。
         return llm.haiku(prompt) or base
     except Exception:
@@ -90,10 +91,10 @@ def main():
             f"提案：{KINDJP[f['kind']]}\n"
             f"対象：{link or f.get('channel', '')}\n"
             f"検知：{kenchi}\n\n"
-            f"{DIV}\n\n"
-            f"*{tgt_name}*\n"          # ← プレビュー（太字の表示名・通知は飛ばない）
-            f"{draft}\n\n"
-            f"{DIV}\n\n"
+            f"```\n"               # 文面プレビューはコードブロック（メンション/装飾が発火しない＝松永さんに通知も飛ばない）
+            f"{tgt_name}\n"
+            f"{draft}\n"
+            f"```\n"
             f"このスレッドに GO・却下・文面修正 の指示をお願いします。"
         )
         res = source.post_message(runtime.CH_CHIAKI_MGMT, proposal)
