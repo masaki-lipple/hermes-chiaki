@@ -224,6 +224,18 @@ def notation_check(text: str, rules: dict) -> list[dict]:
     return list(uniq.values())
 
 
+def apply_notation_fixes(text: str, rules: dict) -> tuple[str, list]:
+    """chiaki 自身の生成文を規約に通して自動補正（誤例→正例・誤変換→正式・頭字語casing）。
+    高確度のもののみ単純置換。返り値: (補正後テキスト, 適用リスト)。"""
+    fixed, applied = text, []
+    for iss in notation_check(text, rules):
+        f, s = iss.get("found"), iss.get("suggest")
+        if f and s and f in fixed and f != s:
+            fixed = fixed.replace(f, s)
+            applied.append((f, s))
+    return fixed, applied
+
+
 # ── §3.6 65分無音リマインド ─────────────────────────────
 SILENCE_THRESHOLD_SEC = 65 * 60
 

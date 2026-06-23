@@ -24,9 +24,23 @@ def _compose(gap_min, now_ts) -> str:
         prompt = (f"松永さんへの進捗リマインドを書いてください。"
                   f"最後の報告から{gap}分経過。現在は{hour}時台。"
                   f"必ず含める情報: 経過が{gap}分であること、進捗報告の依頼。宛名(@)は付けず本文だけ。")
-        return llm.haiku(prompt) or fb
+        return _regulate(llm.haiku(prompt) or fb)
     except Exception:
         return fb
+
+
+def _regulate(text: str) -> str:
+    """生成文をレギュレーション（live同期の notation_rules）に通して自動補正＝自分も規約を守る。"""
+    try:
+        import json as _json
+        rp = runtime.STATE_DIR / "notation_rules.json"
+        if rp.exists():
+            rules = _json.loads(rp.read_text(encoding="utf-8"))
+            fixed, _ = observe.apply_notation_fixes(text, rules)
+            return fixed
+    except Exception:
+        pass
+    return text
 
 
 def main():
