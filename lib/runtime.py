@@ -100,6 +100,15 @@ def ensure_punct(text: str) -> str:
         if (t2.startswith("<@") or t2.startswith("<!")) and t2.endswith(">") and " " not in t2:
             out.append(s)  # メンション/チャンネル単独行
             continue
+        if "://" in t2:
+            out.append(s)  # URL 行
+            continue
+        if set(t2) <= set("ー—–-＝=・　 "):
+            out.append(s)  # 区切り行（ーーーーー等）
+            continue
+        if "：" in t2 and len(t2.split("：", 1)[0]) <= 8:
+            out.append(s)  # 短いラベル行（提案：/対象：/検知：等）は文末扱いしない
+            continue
         if s[-1] not in _PUNCT_END:
             s = s + "。"
         out.append(s)
