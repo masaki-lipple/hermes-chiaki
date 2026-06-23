@@ -242,10 +242,8 @@ SILENCE_THRESHOLD_SEC = 65 * 60
 
 def silence_decision(messages: list[dict], now_ts: float,
                      threshold_sec: int = SILENCE_THRESHOLD_SEC,
-                     already_reminded_after_ts: float | None = None,
-                     break_grace_sec: int = 4500) -> dict:
-    """今 now_ts 時点で鳴らすべきか。終業後は鳴らさない・休憩中は猶予内なら鳴らさない・連打しない。
-    messages は対象者(松永さん等)の活動＝トップレベル＋スレッド返信(bot/自分除外)を渡す前提。"""
+                     already_reminded_after_ts: float | None = None) -> dict:
+    """今 now_ts 時点で鳴らすべきか。終業後は鳴らさない・連打しない。"""
     if not messages:
         return {"fire": False, "reason": "no_messages"}
     msgs = sorted(messages, key=lambda x: x["ts_float"])
@@ -254,9 +252,6 @@ def silence_decision(messages: list[dict], now_ts: float,
     if any(classify_event(m["text"]).get("type") == "eow" for m in msgs):
         return {"fire": False, "reason": "eow_reached", "last_ts": last["ts_float"]}
     gap = now_ts - last["ts_float"]
-    # 休憩中（最新が中断/休憩）は猶予内なら鳴らさない（昼休み等）。猶予超過＝戻り忘れの可能性で鳴らす
-    if classify_event(last["text"]).get("type") == "break" and gap < break_grace_sec:
-        return {"fire": False, "reason": "on_break", "gap_min": round(gap / 60, 1)}
     if gap < threshold_sec:
         return {"fire": False, "reason": "within_threshold", "gap_min": round(gap / 60, 1)}
     if already_reminded_after_ts is not None and already_reminded_after_ts >= last["ts_float"]:

@@ -10,8 +10,8 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import observe, runtime, source  # noqa: E402
 
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
-# 固定フォールバック文（Haiku 生成が失敗した時に必ず出す）
-FALLBACK_BODY = "最後のご報告から{gap}分経過しています。進捗報告お願いします！"
+# 固定フォールバック文（Haiku 生成が失敗/不自然な時に必ず出す）。丁寧・きつくない・正しい日本語
+FALLBACK_BODY = "最後のご報告から{gap}分が経過しています。よろしければ進捗を教えてください。"
 
 
 def _compose(gap_min, now_ts) -> str:
@@ -22,12 +22,14 @@ def _compose(gap_min, now_ts) -> str:
     try:
         from lib import llm
         hour = _dt.datetime.fromtimestamp(now_ts, _dt.timezone(_dt.timedelta(hours=9))).hour
-        prompt = (f"松永さんへの進捗リマインドを1〜2文で書いてください。"
-                  f"経過は『{gap}分』とだけ書く（分単位。週・日・時間などの他単位や『先週』『今週』『昨日』に言い換えない）。"
-                  f"現在は{hour}時台。進捗報告を依頼。宛名(@)は付けず本文だけ。")
+        prompt = (f"松永さんへの進捗リマインドを1文で書いてください。"
+                  f"必ず『{gap}分が経過』という語を入れ、『最後のご報告から{gap}分が経過しています』という意味にする。"
+                  f"続けて進捗の共有を丁寧に依頼する（きつくしない・柔らかく）。現在は{hour}時台。"
+                  f"絵文字なし・宛名(@)なし・本文のみ。日付や他の時間単位（週/日/時間）は使わない。")
         body = llm.haiku(prompt) or fb
-        # 事実崩れガード: {gap}分が無い / 週・日に化けたら固定文へ
-        if f"{gap}分" not in body or any(w in body for w in ("週", "日前", "時間前", "昨日", "先週", "今週")):
+        # 事実崩れ/不自然ガード: 『{gap}分(が)経過』が無い / 週日化け / 『だけ』の誤用 → 固定文へ
+        ok = (f"{gap}分が経過" in body) or (f"{gap}分経過" in body)
+        if not ok or any(w in body for w in ("週", "日前", "時間前", "昨日", "先週", "今週", "だけ")):
             body = fb
         return _regulate(body)
     except Exception:
@@ -53,42 +55,23 @@ def main():
     now = runtime.now_ts()
     timers = runtime.load_json("channel_timers.json", {})
     t = timers.get(ch, {})
-    bots = {runtime.GCP_TASK_BOT, runtime.CHIAKI_SELF}
 
     recent = source.read_recent(ch, limit=50)
     if not recent:
         print("[SILENT] no messages")
         return
     today = recent[-1]["datetime"][:10]
-    top_today = [m for m in recent if m["datetime"][:10] == today]
-
-    # 対象者(松永さん)の活動を トップレベル＋スレッド返信 から集める（bot/自分は除外）。
-    # スレッド内の「再開」「報告」も活動として数える＝スレッドで動いていれば催促しない。
-    human, root_of = [], {}
-    for m in top_today:
-        if m["user_id"] not in bots:
-            human.append(m)
-            root_of[m["ts"]] = m["ts"]
-        if m.get("thread_replies"):
-            for r in source.read_thread(ch, m["ts"]):
-                if r["ts"] == m["ts"] or r["user_id"] in bots:
-                    continue
-                human.append(r)
-                root_of[r["ts"]] = m["ts"]
-    if not human:
-        print("[SILENT] no human messages")
-        return
+    today_msgs = [m for m in recent if m["datetime"][:10] == today]
 
     dec = observe.silence_decision(
-        human, now, already_reminded_after_ts=t.get("already_reminded_after_ts"))
+        today_msgs, now, already_reminded_after_ts=t.get("already_reminded_after_ts"))
     if not dec["fire"]:
         print(f"[SILENT] {dec['reason']} ({dec.get('gap_min', '-')}min)")
         return
 
-    last = sorted(human, key=lambda x: x["ts_float"])[-1]
-    target_root = root_of.get(dec["target_ts"], dec["target_ts"])  # 活動中のスレッドへ返す
+    last = today_msgs[-1]
     body = _compose(dec["gap_min"], now)
-    res = source.post_thread_reply(ch, target_root, f"<@{last['user_id']}>\n{body}")
+    res = source.post_thread_reply(ch, dec["target_ts"], f"<@{last['user_id']}>\n{body}")
     nudge_ts = res.get("ts") if isinstance(res, dict) else None
     t["already_reminded_after_ts"] = last["ts_float"]
     timers[ch] = t
@@ -99,7 +82,7 @@ def main():
               f"最終投稿（{last['datetime']}）から{int(dec['gap_min'])}分無音 → スレッドで1回促しました。")
     if nudge_ts:
         notice += (f"\n\nhttps://{TEAM}.slack.com/archives/{ch}/p{nudge_ts.replace('.', '')}"
-                   f"?thread_ts={target_root}&cid={ch}")
+                   f"?thread_ts={dec['target_ts']}&cid={ch}")
     source.post_message(runtime.CH_CHIAKI_MGMT, notice)
     print(f"[silence] fired: gap={dec['gap_min']}min target={dec['target_dt']}")
 
