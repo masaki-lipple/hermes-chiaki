@@ -35,6 +35,24 @@ def _run_apply():
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
+# chiaki-tuning（#8902/#5902 の戸田さん投稿＝指示は学習・質問は回答）も即時起動
+_TUNE = os.path.join(os.environ["HERMES_PROFILE_DIR"], "skills/lipple/chiaki-tuning/scripts/run.py")
+_gt = {"__file__": _TUNE, "__name__": "chiaki_tuning_mod"}
+exec(compile(open(_TUNE).read(), _TUNE, "exec"), _gt)
+_tuning_main = _gt["main"]
+TUNE_LOCK = "/tmp/chiaki_tuning.lock"
+
+
+def _run_tuning():
+    """flock を取って chiaki-tuning を実行（crontab と排他）。"""
+    with open(TUNE_LOCK, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            _tuning_main()
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def _is_relevant(ch: str, thread_ts: str) -> bool:
     """その返信が pending に関係する（＝apply-ruling が見るべき）スレッドか。"""
     if not thread_ts:
@@ -72,17 +90,20 @@ def main():
             return
         if ev.get("user") == runtime.CHIAKI_SELF:
             return
-        ch, tts = ev.get("channel"), ev.get("thread_ts")
-        if _is_relevant(ch, tts):
-            print(f"[listener] relevant reply ch={ch} thread={tts} -> apply-ruling", flush=True)
-            try:
+        ch, tts, user = ev.get("channel"), ev.get("thread_ts"), ev.get("user")
+        try:
+            if _is_relevant(ch, tts):
+                print(f"[listener] ruling event ch={ch} thread={tts} -> apply-ruling", flush=True)
                 _run_apply()
-            except Exception as e:
-                print(f"[listener] apply error: {e}", flush=True)
+            elif user == runtime.TODA and ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA):
+                print(f"[listener] toda msg ch={ch} -> chiaki-tuning (即時)", flush=True)
+                _run_tuning()
+        except Exception as e:
+            print(f"[listener] handler error: {e}", flush=True)
 
     client.socket_mode_request_listeners.append(handle)
     client.connect()
-    print("[listener] connected (Socket Mode, deterministic apply-ruling only)", flush=True)
+    print("[listener] connected (Socket Mode: apply-ruling裁定/完了 ＋ chiaki-tuning即時)", flush=True)
     threading.Event().wait()
 
 
