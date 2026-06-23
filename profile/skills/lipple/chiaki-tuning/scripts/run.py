@@ -97,11 +97,15 @@ def _revise(text: str, skill: str) -> str:
     directives = list(dict.fromkeys(runtime.load_tuning(skill)))  # skill＋general・重複排除
     if not directives:
         return ""
+    n = text.count("\n")
     prompt = ("次の Chiaki AI の投稿を、以下の指示に従って最小限だけ修正してください。"
-              "事実・数字・構成・改行・行数は変えない。文体/表記/句読点/記号だけ直す。"
-              "先頭の <!channel> はそのまま残す。修正後の本文のみ出力（前置きなし）。\n"
+              "**改行位置と行数は厳守（行を結合も分割もしない。各行をその行の中だけで直す）**。"
+              "事実・数字・構成は変えない。文体/表記/句読点/記号だけ直す。先頭の <!channel> はそのまま残す。"
+              "修正後の本文のみ出力（前置きなし）。\n"
               f"指示: {'; '.join(directives)}\n投稿:\n{text}")
-    return (llm.haiku(prompt, max_tokens=400) or "").strip()
+    out = (llm.haiku(prompt, max_tokens=400) or "").strip()
+    # 行数が変わった＝構成を壊したら採用しない（3行ルール等を守る）
+    return out if (out and out.count("\n") == n and out != text) else ""
 
 
 def _maybe_edit_root(ch: str, root: str, skill: str):
