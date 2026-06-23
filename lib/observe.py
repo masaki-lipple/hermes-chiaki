@@ -197,6 +197,14 @@ def reconcile_with_plan(plan_blocks: list[dict], actuals: list[dict]) -> list[di
 _LATIN_RUN = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 
 
+def _is_kana(ch: str) -> bool:
+    return bool(ch) and ("ぁ" <= ch <= "ヿ")  # ひらがな〜カタカナ（長音ー含む）
+
+
+def _is_kanji(ch: str) -> bool:
+    return bool(ch) and ("一" <= ch <= "鿿")
+
+
 def notation_check(text: str, rules: dict) -> list[dict]:
     """高確度の表記候補を抽出。種別ズレ等の判断は上位 LLM に委ねる。"""
     issues = []
@@ -216,9 +224,15 @@ def notation_check(text: str, rules: dict) -> list[dict]:
     # スタイルルール（レギュレーション_DB の 誤例→正例）: 誤例が出現 → 正例を提案
     for r in rules.get("style_rules", []):
         w, right = r.get("wrong"), r.get("right")
-        if w and w in text:
-            issues.append({"kind": "style_rule", "found": w, "suggest": right,
-                           "rule": r.get("rule"), "confidence": "high"})
+        if not (w and w in text):
+            continue
+        # 1文字の漢字ルール（事/為/等＝形式名詞・連用）は複合語(記事/行為/均等)に誤マッチしやすい。
+        # 直前が仮名のとき＝形式名詞・連用用法のときだけ拾う（複合語は直前が漢字なので除外）。
+        if len(w) == 1 and _is_kanji(w):
+            if not any(i > 0 and _is_kana(text[i - 1]) for i, ch in enumerate(text) if ch == w):
+                continue
+        issues.append({"kind": "style_rule", "found": w, "suggest": right,
+                       "rule": r.get("rule"), "confidence": "high"})
     # 重複除去
     uniq = {(i["kind"], i["found"], i["suggest"]): i for i in issues}
     return list(uniq.values())

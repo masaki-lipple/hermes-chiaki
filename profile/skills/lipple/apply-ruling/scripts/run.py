@@ -21,6 +21,9 @@ from lib import runtime, source  # noqa: E402
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
 REJECT = ("却下", "ng", "見送", "流して", "流す", "スルー", "ボツ", "なしで", "却下で", "やめ", "不要")
 GO_EXACT = {"go", "ok", "おk", "おけ", "ｏｋ", "ゴー", "承認", "いいね", "了解", "りょうかい", "よし"}
+# 質問・困惑（裁定ではない）＝ #5035 へ誤爆させず skip する手掛かり
+QUESTION_WORDS = ("どういうこと", "どういう意味", "意味がわからない", "意味が分から",
+                  "理解できない", "なぜ", "どうして", "意味不明", "よくわからない", "よくわから")
 # 対象者の完了報告とみなすキーワード（chiaki へのメンションが無い場合の保険）
 COMPLETE_WORDS = ("直し", "なおし", "修正しました", "修正済", "修正完了", "完了", "対応しました",
                   "対応済", "できました", "やりました", "反映しました", "なおしました")
@@ -48,6 +51,9 @@ def _classify(text: str):
     core = re.sub(r"[\s。、!！.．…~〜ｗw笑👍🙆\U0001F300-\U0001FAFF]+", "", t)
     if core in GO_EXACT:
         return ("go", "")
+    # 質問・困惑（？で終わる or 疑問語）は裁定指示ではない → 投稿しない（#5035 への誤爆防止）
+    if t.endswith(("?", "？")) or any(w in t for w in QUESTION_WORDS):
+        return ("skip", "")
     return ("interpret", text.strip())
 
 
