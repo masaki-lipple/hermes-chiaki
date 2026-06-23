@@ -21,10 +21,14 @@ def _compose(gap_min, now_ts) -> str:
     try:
         from lib import llm
         hour = _dt.datetime.fromtimestamp(now_ts, _dt.timezone(_dt.timedelta(hours=9))).hour
-        prompt = (f"松永さんへの進捗リマインドを書いてください。"
-                  f"最後の報告から{gap}分経過。現在は{hour}時台。"
-                  f"必ず含める情報: 経過が{gap}分であること、進捗報告の依頼。宛名(@)は付けず本文だけ。")
-        return _regulate(llm.haiku(prompt) or fb)
+        prompt = (f"松永さんへの進捗リマインドを1〜2文で書いてください。"
+                  f"経過は『{gap}分』とだけ書く（分単位。週・日・時間などの他単位や『先週』『今週』『昨日』に言い換えない）。"
+                  f"現在は{hour}時台。進捗報告を依頼。宛名(@)は付けず本文だけ。")
+        body = llm.haiku(prompt) or fb
+        # 事実崩れガード: {gap}分が無い / 週・日に化けたら固定文へ
+        if f"{gap}分" not in body or any(w in body for w in ("週", "日前", "時間前", "昨日", "先週", "今週")):
+            body = fb
+        return _regulate(body)
     except Exception:
         return fb
 
