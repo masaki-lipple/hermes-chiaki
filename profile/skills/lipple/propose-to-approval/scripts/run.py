@@ -15,8 +15,9 @@ TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
 KINDS = ("notation", "typo", "stall")
 KINDJP = {"notation": "表記", "typo": "誤字", "stall": "停滞"}
 DIV = "ーーーーー"
-# 監視チャンネル → 対象者（apply-ruling が本物の @メンションで使う / プレビューは表示名のみ）
-CH_TARGET = {"C09U4T1BBU0": ("U09T44VEZM1", "松永さん")}
+# 監視チャンネル → (user_id, 表示名)。apply-ruling は user_id で本物の @メンション、
+# 提案プレビューは表示名を太字（承認前に対象者へ通知を飛ばさない）。
+CH_TARGET = {"C09U4T1BBU0": ("U09T44VEZM1", "Yu Matsunaga")}
 
 
 def _target(channel: str):
@@ -76,7 +77,7 @@ def main():
             f"対象：{link or f.get('channel', '')}\n"
             f"検知：{kenchi}\n\n"
             f"{DIV}\n\n"
-            f"@{tgt_name}\n"          # ← プレビュー（プレーン文字・松永さんに通知は飛ばない）
+            f"*{tgt_name}*\n"          # ← プレビュー（太字の表示名・通知は飛ばない）
             f"{draft}\n\n"
             f"{DIV}\n\n"
             f"このスレッドに GO・却下・文面修正 の指示をお願いします。"
