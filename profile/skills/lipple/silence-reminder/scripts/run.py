@@ -10,9 +10,8 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import observe, runtime, source  # noqa: E402
 
 REMINDER_TMPL = (
-    "<@{user}> お疲れさまです。最後のご報告から{gap}分ほど空いています。"
-    "1時間ルールの進捗報告、もし作業中でしたら一言いただけると助かります🙏"
-    "（手が離せなければ後ほどで大丈夫です）"
+    "<@{user}>\n"
+    "最後のご報告から{gap}分ほど空いています。進捗報告お願いします！"
 )
 
 
