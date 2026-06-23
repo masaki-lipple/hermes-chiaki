@@ -21,7 +21,7 @@ SKILLS = {"silence", "pdca", "propose", "notation", "stall", "general"}
 CAP = 8  # skill ごとに保持する指示の最大数
 
 
-def _classify(text: str):
+def _classify(text: str, hint: str = ""):
     """戸田さんの投稿を {is_feedback, skill, directive, ack} に分類。失敗時 None。"""
     try:
         from lib import llm
@@ -29,12 +29,15 @@ def _classify(text: str):
         return None
     prompt = (
         "次は戸田さんが Chiaki AI（社内タスク管理AI）に送ったメッセージです。"
-        "これは Chiaki AI の振る舞い・文面・運用に対する指示/フィードバックですか？\n"
+        + (f"（文脈: {hint}）" if hint else "")
+        + "これは Chiaki AI の振る舞い・文面・運用への指示/フィードバックですか？\n"
         f"メッセージ: {text}\n"
-        "そうなら、対象機能 skill を "
-        "silence(無音リマインド)/pdca(自己PDCA)/propose(指摘の提案文面)/notation(表記ルール)/"
-        "stall(停滞)/general(全般) から1つ選び、今後 Chiaki AI が守るべき指示を簡潔に1文(directive)、"
-        "戸田さんへの短い了解文(ack)を作ってください。指示・フィードバックでなければ is_feedback を false に。"
+        "そうなら、対象 skill を "
+        "silence(無音リマインド)/pdca(自己PDCA)/propose(指摘の提案文面)/notation(表記検知)/"
+        "stall(停滞)/general(全般) から1つ選ぶ。"
+        "**用語の統一や全般的な言い回し（複数機能に効く指示）は general を選ぶ**。"
+        "今後 Chiaki AI が守るべき指示を簡潔に1文(directive)、戸田さんへの短い了解文(ack)を作る。"
+        "指示・フィードバックでなければ is_feedback を false に。"
         'JSON のみ出力: {"is_feedback": true/false, "skill": "silence|pdca|propose|notation|stall|general", '
         '"directive": "今後守る指示", "ack": "了解文"}'
     )
@@ -56,21 +59,22 @@ def _candidates(cur: dict):
     pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
     open_threads = {ts for ts, it in pend.items()
                     if it.get("status") in ("pending", "awaiting_completion")}
-    cand = []
+    pdca_hint = "#5902＝Chiaki AIの自己PDCAチャンネル。PDCA文面の調整が中心だが、用語統一や全般の言い回しなら general"
+    cand = []  # (msg, ack_root_ts, channel, hint)
     since_m = float(cur.get(mgmt, 0.0))
     for m in source.read_recent(mgmt, limit=50):
         if m["user_id"] == runtime.TODA and m["ts_float"] > since_m:
-            cand.append((m, m["ts"], mgmt, None))
+            cand.append((m, m["ts"], mgmt, ""))
         if m.get("thread_replies") and m["ts"] not in open_threads:
             for r in source.read_thread(mgmt, m["ts"]):
                 if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_m:
-                    cand.append((r, m["ts"], mgmt, None))
+                    cand.append((r, m["ts"], mgmt, ""))
     since_p = float(cur.get(pdca, 0.0))
     for m in source.read_recent(pdca, limit=50):
         if m.get("thread_replies"):
             for r in source.read_thread(pdca, m["ts"]):
                 if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_p:
-                    cand.append((r, m["ts"], pdca, "pdca"))
+                    cand.append((r, m["ts"], pdca, pdca_hint))
     return cand
 
 
@@ -82,12 +86,12 @@ def main():
         return
     tuning = runtime.load_json("tuning.json", {})
     maxts, learned = {}, 0
-    for m, root, ch, force_skill in sorted(cand, key=lambda x: x[0]["ts_float"]):
+    for m, root, ch, hint in sorted(cand, key=lambda x: x[0]["ts_float"]):
         maxts[ch] = max(maxts.get(ch, float(cur.get(ch, 0.0))), m["ts_float"])
-        c = _classify(m["text"])
+        c = _classify(m["text"], hint)
         if not c or not c.get("is_feedback"):
             continue
-        skill = force_skill or (c.get("skill") if c.get("skill") in SKILLS else "general")
+        skill = c.get("skill") if c.get("skill") in SKILLS else "general"
         directive = (c.get("directive") or "").strip()
         if not directive:
             continue
