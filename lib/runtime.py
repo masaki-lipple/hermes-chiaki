@@ -79,3 +79,28 @@ def load_tuning(skill: str, n: int = 6) -> list:
     t = load_json("tuning.json", {})
     items = list(t.get(skill, [])) + list(t.get("general", []))
     return [d.get("directive", d) if isinstance(d, dict) else d for d in items][-n:]
+
+
+_PUNCT_END = "。！？!?、，…「」『』（）()：:〜・"
+
+
+def ensure_punct(text: str) -> str:
+    """各文末に句読点「。」を確実に付ける（メンション/チャンネル単独行・コードブロック内・空行は除外）。"""
+    out, in_code = [], False
+    for ln in (text or "").split("\n"):
+        s = ln.rstrip()
+        t2 = s.strip()
+        if t2.startswith("```"):
+            in_code = not in_code
+            out.append(s)
+            continue
+        if in_code or not t2:
+            out.append(s)
+            continue
+        if (t2.startswith("<@") or t2.startswith("<!")) and t2.endswith(">") and " " not in t2:
+            out.append(s)  # メンション/チャンネル単独行
+            continue
+        if s[-1] not in _PUNCT_END:
+            s = s + "。"
+        out.append(s)
+    return "\n".join(out)

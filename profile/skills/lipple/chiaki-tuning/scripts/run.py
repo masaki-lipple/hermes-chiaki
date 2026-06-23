@@ -209,12 +209,12 @@ def main():
             tuning[skill] = tuning[skill][-CAP:]
             edited = _maybe_edit_root(ch, root, skill, directive, m["text"])  # 今回の指示で対象投稿を実際に編集
             ack = "修正しました。" if edited else ((c.get("ack") or "").strip() or "承知しました。今後反映します。")
-            source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{ack}")  # やりとり相手=戸田さん宛て
+            source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(ack)}")  # 戸田さん宛て・句読点保証
             acted += 1
         elif typ == "question":
             ans = _answer(m["text"], ch, root)
             if ans:
-                source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{ans}")  # 戸田さん宛て
+                source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(ans)}")  # 戸田さん宛て
                 acted += 1
     if tuning:
         runtime.save_json("tuning.json", tuning)
