@@ -21,7 +21,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime, source  # noqa: E402
+from lib import runtime, source, notion  # noqa: E402
 
 SKILLS = {"silence", "pdca", "propose", "notation", "stall", "general"}
 CAP = 12  # skill ごとに保持する指示の最大数（トンマナ一括ロードに対応）
@@ -215,13 +215,22 @@ def main():
             continue
         typ = c.get("type")
         if typ == "directive":
-            # Slackでは対応できない=コード変更が要る指示は、学習せず正直に返す（Bの本体は別途・保留）
+            # コード対応が要る指示は学習せず、Notionへ起票して正直に返す（PR/自動デプロイは別途・保留）
             if (c.get("scope") or "soft").strip().lower() == "hard":
+                slack_url = (f"https://lipple.slack.com/archives/{ch}"
+                             f"/p{m['ts'].replace('.', '')}?thread_ts={root}&cid={ch}")
+                ch_label = ("#8902" if ch == runtime.CH_CHIAKI_MGMT
+                            else "#5902" if ch == runtime.CH_CHIAKI_PDCA else "")
+                summary = (c.get("directive") or m["text"]).strip()
+                page_url = notion.create_request(summary, m["text"], slack_url, ch_label)
                 runtime.append_jsonl("code_requests.jsonl", {
                     "ts": runtime.now_ts(), "channel": ch, "thread": root,
-                    "text": m["text"], "directive": (c.get("directive") or "").strip()})
+                    "text": m["text"], "directive": (c.get("directive") or "").strip(),
+                    "notion_url": page_url})
+                tail = f"\n{page_url}" if page_url else ""
                 msg = ("ご指摘ありがとうございます！\n"
-                       "この内容は Slack では対応できないので、Claude Codeをお使いください。")
+                       "この内容はコード対応が必要なので、変更リクエストとして記録しました。"
+                       "Claude Code で対応します。" + tail)
                 source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(msg)}")
                 acted += 1
                 continue
