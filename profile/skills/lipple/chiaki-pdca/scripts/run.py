@@ -77,7 +77,7 @@ def _compose(mode: str, date: str, since: float):
                   "1行目=報告(『おはようございます。』で始め、本日の観測を開始する旨)、"
                   "2行目=詳細(終日 #5035 松永さんのPDCAと #a027 日本自動ドアを観測し、1時間ルール・表記/誤字・予実・停滞を見る旨)、"
                   "3行目=ラポート(気づきや提案は #8902 に上げ、完了確認とリマインドも行う旨)。"
-                  "絵文字なし・です/ます・各行簡潔・3行だけ・前置きなし。")
+                  "報告・詳細・ラポートの3部を、半角の ||| で区切って1行で返す。改行・前置き・絵文字なし、です/ます、各部1文で簡潔。")
     elif mode == "progress":
         d = _progress_digest(since, date)
         prompt = ("Chiaki AI の毎時の観測進捗PDCAを3行で書いてください。数字は素材を使う。"
@@ -85,16 +85,19 @@ def _compose(mode: str, date: str, since: float):
                   f"裁定(GO/反映{d['go']}・却下{d['reject']})・修正完了{d['completed']}件。"
                   "1行目=報告(過去1時間の観測報告である旨)、"
                   "2行目=詳細(数字で要点。すべて0なら『目立った動きはありません』等に丸めてよい)、"
-                  "3行目=ラポート(引き続き何を見るか一言)。絵文字なし・です/ます・各行簡潔・3行だけ・前置きなし。")
+                  "3行目=ラポート(引き続き何を見るか一言)。報告・詳細・ラポートの3部を、半角の ||| で区切って1行で返す。改行・前置き・絵文字なし、です/ます、各部1文で簡潔。")
     else:
         d = _close_digest(date)
         prompt = ("Chiaki AI の終業まとめPDCAを3行で書いてください。数字は素材を使う。"
                   f"素材: 実測{d['actuals']}件・未突合{d['unmatched']}件、検知(表記{d['notation']}・誤字{d['typo']}・停滞{d['stall']})、"
                   f"裁定(GO/反映{d['go']}・却下{d['reject']})・修正完了{d['completed']}件、未対応{d['open']}件。"
                   "1行目=報告(本日の観測を終了する旨)、2行目=詳細(数字で要点)、3行目=ラポート(所感・明日への一言)。"
-                  "絵文字なし・です/ます・各行簡潔・3行だけ・前置きなし。")
+                  "報告・詳細・ラポートの3部を、半角の ||| で区切って1行で返す。改行・前置き・絵文字なし、です/ます、各部1文で簡潔。")
     body = llm.haiku(prompt, max_tokens=300)
-    return body.strip() if body else None
+    if not body:
+        return None
+    parts = [p.strip() for p in body.split("|||") if p.strip()]  # 必ず報告/詳細/ラポートの3行へ
+    return "\n".join(parts) if len(parts) == 3 else body.strip()
 
 
 def main():

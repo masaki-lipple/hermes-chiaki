@@ -53,41 +53,53 @@ def main():
     now = runtime.now_ts()
     timers = runtime.load_json("channel_timers.json", {})
     t = timers.get(ch, {})
+    bots = {runtime.GCP_TASK_BOT, runtime.CHIAKI_SELF}
 
     recent = source.read_recent(ch, limit=50)
     if not recent:
         print("[SILENT] no messages")
         return
     today = recent[-1]["datetime"][:10]
-    today_msgs = [m for m in recent if m["datetime"][:10] == today]
+    top_today = [m for m in recent if m["datetime"][:10] == today]
 
-    dec = observe.silence_decision(
-        today_msgs, now,
-        already_reminded_after_ts=t.get("already_reminded_after_ts"))
-    if not dec["fire"]:
-        print(f"[SILENT] {dec['reason']} ({dec.get('gap_min','-')}min)")
+    # 対象者(松永さん)の活動を トップレベル＋スレッド返信 から集める（bot/自分は除外）。
+    # スレッド内の「再開」「報告」も活動として数える＝スレッドで動いていれば催促しない。
+    human, root_of = [], {}
+    for m in top_today:
+        if m["user_id"] not in bots:
+            human.append(m)
+            root_of[m["ts"]] = m["ts"]
+        if m.get("thread_replies"):
+            for r in source.read_thread(ch, m["ts"]):
+                if r["ts"] == m["ts"] or r["user_id"] in bots:
+                    continue
+                human.append(r)
+                root_of[r["ts"]] = m["ts"]
+    if not human:
+        print("[SILENT] no human messages")
         return
 
-    last = today_msgs[-1]
+    dec = observe.silence_decision(
+        human, now, already_reminded_after_ts=t.get("already_reminded_after_ts"))
+    if not dec["fire"]:
+        print(f"[SILENT] {dec['reason']} ({dec.get('gap_min', '-')}min)")
+        return
+
+    last = sorted(human, key=lambda x: x["ts_float"])[-1]
+    target_root = root_of.get(dec["target_ts"], dec["target_ts"])  # 活動中のスレッドへ返す
     body = _compose(dec["gap_min"], now)
-    text = f"<@{last['user_id']}>\n{body}"
-    res = source.post_thread_reply(ch, dec["target_ts"], text)
+    res = source.post_thread_reply(ch, target_root, f"<@{last['user_id']}>\n{body}")
     nudge_ts = res.get("ts") if isinstance(res, dict) else None
-    # 連打防止フラグ
     t["already_reminded_after_ts"] = last["ts_float"]
     timers[ch] = t
     runtime.save_json("channel_timers.json", timers)
-    # 控えを #8902 へ（提案と同体裁・対象=チャンネルURL・末尾に促した投稿への deep link）
+    # 控えを #8902 へ（セルフメンション＝戸田さんはping無し・対象=チャンネルURL・末尾に促した投稿リンク）
     ch_url = f"https://{TEAM}.slack.com/archives/{ch}"
-    # リマインド控え＝処理/独り言なのでセルフメンション（@Chiaki AI）。戸田さんはpingしない
-    notice = (f"<@{runtime.CHIAKI_SELF}>\n"
-              f"報告：リマインド控え\n"
-              f"対象：{ch_url}\n\n"
+    notice = (f"<@{runtime.CHIAKI_SELF}>\n報告：リマインド控え\n対象：{ch_url}\n\n"
               f"最終投稿（{last['datetime']}）から{int(dec['gap_min'])}分無音 → スレッドで1回促しました。")
     if nudge_ts:
-        link = (f"https://{TEAM}.slack.com/archives/{ch}/p{nudge_ts.replace('.', '')}"
-                f"?thread_ts={dec['target_ts']}&cid={ch}")
-        notice += f"\n\n{link}"
+        notice += (f"\n\nhttps://{TEAM}.slack.com/archives/{ch}/p{nudge_ts.replace('.', '')}"
+                   f"?thread_ts={target_root}&cid={ch}")
     source.post_message(runtime.CH_CHIAKI_MGMT, notice)
     print(f"[silence] fired: gap={dec['gap_min']}min target={dec['target_dt']}")
 
