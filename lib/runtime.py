@@ -71,3 +71,11 @@ def load_policy() -> dict:
 def record_finding(kind: str, payload: dict) -> None:
     """承認が要る判断候補を findings キューに積む（propose-to-approval が #8902 へ出す）。"""
     append_jsonl("findings.jsonl", {"ts": now_ts(), "kind": kind, "status": "new", **payload})
+
+
+def load_tuning(skill: str, n: int = 6) -> list:
+    """戸田さんが #8902 で与えた調整指示（chiaki-tuning が tuning.json に蓄積）。
+    指定 skill＋general の直近 n 件を返す。各生成（silence/pdca/propose）が文面に反映する。"""
+    t = load_json("tuning.json", {})
+    items = list(t.get(skill, [])) + list(t.get("general", []))
+    return [d.get("directive", d) if isinstance(d, dict) else d for d in items][-n:]

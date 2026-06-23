@@ -58,6 +58,9 @@ def _draft(f: dict, rules: dict) -> str:
             lines = "\n".join(f"- 案『{r['original']}』→ 戸田さん採用『{r['corrected']}』" for r in ex)
             shot = ("\n以下は戸田さんが過去に直した例。言い回し・長さ・温度感をこの傾向に寄せる"
                     "（内容は今回の指摘に合わせる。例文の固有名や語はそのまま流用しない）:\n" + lines)
+        tn = runtime.load_tuning("propose")  # 戸田さんの口頭調整を反映
+        if tn:
+            shot += "\n戸田さんの指示（必ず守る）: " + "; ".join(tn)
         prompt = (f"松永さんへ送る指摘の文面案を書いてください。内容: {base} "
                   f"対象報告の抜粋: {f.get('excerpt', '')[:60]}。理由を一言添える。"
                   f"最後に『修正したらメンションで報告ください。』の主旨を必ず一文添える。"

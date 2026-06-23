@@ -93,6 +93,9 @@ def _compose(mode: str, date: str, since: float):
                   f"裁定(GO/反映{d['go']}・却下{d['reject']})・修正完了{d['completed']}件、未対応{d['open']}件。"
                   "1行目=報告(本日の観測を終了する旨)、2行目=詳細(数字で要点)、3行目=ラポート(所感・明日への一言)。"
                   "報告・詳細・ラポートの3部を、半角の ||| で区切って1行で返す。改行・前置き・絵文字なし、です/ます、各部1文で簡潔。")
+    tn = runtime.load_tuning("pdca")  # 戸田さんの口頭調整を反映
+    if tn:
+        prompt += " 戸田さんの指示（必ず守る）: " + "; ".join(tn) + "。"
     body = llm.haiku(prompt, max_tokens=300)
     if not body:
         return None
