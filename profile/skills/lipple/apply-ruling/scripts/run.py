@@ -91,6 +91,31 @@ def _remind_text() -> str:
         return "まだ修正ができていません。もう一度確認してください。"
 
 
+def _recheck_text() -> str:
+    """完了報告は来たが まだ直っていない時の指摘。Haiku、失敗時は固定文。"""
+    try:
+        from lib import llm
+        return llm.haiku("修正完了の報告をもらったが、確認するとまだ直っていなかった。"
+                         "お礼を一言添えつつ、まだ反映されていないようなので再確認をお願いする1〜2文。"
+                         "絵文字なし・責めない・です/ます。") \
+            or "まだ修正ができていません。もう一度確認してください。"
+    except Exception:
+        return "まだ修正ができていません。もう一度確認してください。"
+
+
+def _verify_fixed(it: dict, replies: list):
+    """修正後の対象メッセージを検証。True=直っている / False=まだ未修正 / None=検証不能。
+    検知語(verify_found 例「sns」)が編集後の対象メッセージから消えていれば修正済とみなす。"""
+    vf = it.get("verify_found")
+    if not vf:
+        return None
+    src_ts = it.get("source_ts")
+    root = next((m for m in replies if m.get("ts") == src_ts), None)
+    if root is None:
+        return None
+    return vf not in root.get("text", "")
+
+
 def _phase_ruling(items: dict) -> int:
     """Phase1: 戸田さんの裁定を処理。"""
     acted = 0
@@ -149,7 +174,11 @@ def _phase_ruling(items: dict) -> int:
 
 
 def _phase_completion(items: dict) -> int:
-    """Phase2: 対象者の修正完了報告を検知し、お礼＋戸田さんへ完了通知。"""
+    """Phase2: 完了報告の検知＋修正の検証＋（未修正/未報告の）再リマインド。
+      ・検証OK（直っている）  → 対象者へお礼＋戸田さんへ完了通知 → completed
+      ・報告ありだが未修正    → 対象者へ「まだ直っていない」（1報告につき1回）
+      ・未報告かつ未修正      → 時間ベースで再リマインド（最大 MAX_REMINDS 回）
+    """
     acted = 0
     for tts, it in items.items():
         if it.get("status") != "awaiting_completion":
@@ -159,17 +188,37 @@ def _phase_completion(items: dict) -> int:
         if not (src_ch and src_ts and tgt):
             continue
         replies = source.read_thread(src_ch, src_ts)
-        done = None
+        # 対象者の最新の完了報告（chiaki へのメンション or 完了語）
+        report = None
         for m in replies:
-            if m.get("user_id") != tgt:
-                continue
-            if float(m.get("ts", "0")) <= float(nudge_ts):
+            if m.get("user_id") != tgt or float(m.get("ts", "0")) <= float(nudge_ts):
                 continue
             txt = m.get("text", "")
             if f"<@{runtime.CHIAKI_SELF}>" in txt or any(w in txt for w in COMPLETE_WORDS):
-                done = m  # 最新の完了報告を採用
-        if not done:
-            # 未完了：一定時間ごとに再リマインド（最大 MAX_REMINDS 回・cronが9-19のみ稼働）
+                report = m
+        fixed = _verify_fixed(it, replies)  # True=直った / False=未修正 / None=検証不能
+
+        if fixed is True or (fixed is None and report):
+            # 完了（検証OK、または検証不能だが報告あり）→ お礼＋戸田さんへ完了通知
+            source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_thanks()}")
+            done_ts = report["ts"] if report else src_ts
+            link = _permalink(src_ch, done_ts, src_ts)
+            source.post_thread_reply(
+                runtime.CH_CHIAKI_MGMT, tts,
+                f"<@{runtime.TODA}>\n松永さんが修正を完了しました。\n\n{link}\n\nーーーーー")
+            it["status"], it["completion_ts"] = "completed", done_ts
+            runtime.append_jsonl("rulings.jsonl", {
+                "ts": runtime.now_ts(), "thread_ts": tts, "verdict": "completed",
+                "kind": it.get("finding_kind", ""), "completion_ts": done_ts})
+            acted += 1
+        elif report and fixed is False:
+            # 報告は来たが まだ直っていない → 同じ報告には1回だけ指摘（spam防止）
+            if it.get("last_checked_report_ts") != report["ts"]:
+                source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_recheck_text()}")
+                it["last_checked_report_ts"] = report["ts"]
+                acted += 1
+        else:
+            # 未報告かつ未修正 → 時間ベースの再リマインド
             now = runtime.now_ts()
             base = float(it.get("last_remind_ts") or it.get("nudge_ts") or 0)
             rc = it.get("remind_count", 0)
@@ -177,19 +226,6 @@ def _phase_completion(items: dict) -> int:
                 source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_remind_text()}")
                 it["last_remind_ts"], it["remind_count"] = now, rc + 1
                 acted += 1
-            continue
-        # ①対象者へお礼（対象スレッド）
-        source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_thanks()}")
-        # ②戸田さんへ完了通知（#8902 提案スレッド・該当リンク）
-        link = _permalink(src_ch, done["ts"], src_ts)
-        source.post_thread_reply(
-            runtime.CH_CHIAKI_MGMT, tts,
-            f"<@{runtime.TODA}>\n松永さんが修正を完了しました。\n\n{link}\n\nーーーーー")
-        it["status"], it["completion_ts"] = "completed", done["ts"]
-        runtime.append_jsonl("rulings.jsonl", {
-            "ts": runtime.now_ts(), "thread_ts": tts, "verdict": "completed",
-            "kind": it.get("finding_kind", ""), "completion_ts": done["ts"]})
-        acted += 1
     return acted
 
 

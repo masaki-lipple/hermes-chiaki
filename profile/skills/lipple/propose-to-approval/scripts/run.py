@@ -103,7 +103,9 @@ def main():
             pending.setdefault("items", {})[ts] = {
                 "finding_kind": f["kind"], "source_channel": f.get("channel"),
                 "source_ts": f.get("msg_ts"), "draft": draft,
-                "target_user_id": tgt_id, "target_name": tgt_name, "status": "pending"}
+                "target_user_id": tgt_id, "target_name": tgt_name,
+                "verify_found": found,  # 完了検証用：修正後メッセージにこの語が残っていたら未修正
+                "status": "pending"}
         f["status"] = "proposed"
         posted += 1
     if posted:
