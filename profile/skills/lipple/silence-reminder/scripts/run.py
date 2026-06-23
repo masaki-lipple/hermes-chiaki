@@ -10,8 +10,8 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import observe, runtime, source  # noqa: E402
 
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
-# 固定フォールバック文（Haiku 生成が失敗/不自然な時に必ず出す）。丁寧・きつくない・正しい日本語
-FALLBACK_BODY = "最後のご報告から{gap}分が経過しています。よろしければ進捗を教えてください。"
+# 固定フォールバック文（Haiku 生成が失敗/不自然/へりくだり過ぎた時に必ず出す）。言い切り・へりくだらない
+FALLBACK_BODY = "最後の報告から{gap}分が経過しているので、報告をお願いします！"
 
 
 def _compose(gap_min, now_ts) -> str:
@@ -23,13 +23,16 @@ def _compose(gap_min, now_ts) -> str:
         from lib import llm
         hour = _dt.datetime.fromtimestamp(now_ts, _dt.timezone(_dt.timedelta(hours=9))).hour
         prompt = (f"松永さんへの進捗リマインドを1文で書いてください。"
-                  f"必ず『{gap}分が経過』という語を入れ、『最後のご報告から{gap}分が経過しています』という意味にする。"
-                  f"続けて進捗の共有を丁寧に依頼する（きつくしない・柔らかく）。現在は{hour}時台。"
+                  f"必ず『{gap}分が経過』を入れ『最後の報告から{gap}分が経過しているので』と続け、明確に報告を依頼する"
+                  f"（例『報告をお願いします！』）。進捗は必ずあるので、へりくだらず言い切る"
+                  f"（『もし〜あれば』『〜と嬉しいです』『差し支えなければ』『幸いです』等は使わない）。現在は{hour}時台。"
                   f"絵文字なし・宛名(@)なし・本文のみ。日付や他の時間単位（週/日/時間）は使わない。")
         body = llm.haiku(prompt) or fb
-        # 事実崩れ/不自然ガード: 『{gap}分(が)経過』が無い / 週日化け / 『だけ』の誤用 → 固定文へ
+        # 事実崩れ/へりくだり過ぎガード → 固定文（言い切り）へ
         ok = (f"{gap}分が経過" in body) or (f"{gap}分経過" in body)
-        if not ok or any(w in body for w in ("週", "日前", "時間前", "昨日", "先週", "今週", "だけ")):
+        bad = any(w in body for w in ("もし", "あれば", "嬉し", "幸い", "ただけれ", "だけ",
+                                      "週", "日前", "時間前", "昨日", "先週", "今週"))
+        if not ok or bad:
             body = fb
         return _regulate(body)
     except Exception:
