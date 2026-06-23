@@ -2,7 +2,10 @@
 """chiaki-tuning（#8902/#5902 での戸田さんとの対話：指示は学習／質問は回答／決定論＋Haiku・ツール無し）。
 
 戸田さんのメッセージを Haiku で種別判定:
-  - directive: Chiaki AI の振る舞い/文面への指示 → tuning.json に蓄積、ackを返す。
+  - directive: Chiaki AI の振る舞い/文面への指示。
+        soft(文面調整) → tuning.json に蓄積＋ackを返す（必要なら対象投稿も編集）。
+        hard(コード変更が要る: リンク差替/ロジック/しきい値/時間/新機能/バグ等) → 学習せず
+        「ご指摘ありがとうございます！Slackでは対応できないのでClaude Codeをお使いください。」と正直に返す。
   - question : Chiaki AI への質問・依頼（「まとめて」「教えて」等）→ 状態(tuning/観測/スレッド)から
                Haiku がテキストで回答（**コード実行ツールは一切持たない＝安全**）。
   - none     : 何もしない。
@@ -47,8 +50,14 @@ def _classify(text: str, hint: str = ""):
         "- none: それ以外\n"
         f"メッセージ: {text}\n"
         "directive の場合のみ skill(silence/pdca/propose/notation/stall/general)・"
-        "directive(今後守る指示1文)・ack(短い了解文)も付ける。用語統一や全般の言い回しは general。\n"
-        'JSON のみ: {"type":"directive|question|none","skill":"...","directive":"...","ack":"..."}'
+        "directive(今後守る指示1文)・ack(短い了解文)・scope も付ける。用語統一や全般の言い回しは general。\n"
+        "scope は soft か hard:\n"
+        "- soft: 言い回し・トーン・敬語・絵文字・記号・句読点・形式・行数・呼称・レギュレーション用語・"
+        "定型文の文言など『文章の調整』。指示文に必要な情報が揃っていて、文面を学習・書き換えれば対応できるもの。\n"
+        "- hard: 特定のリンク/URL/IDの差し替え、検知ロジック・しきい値・時間/スケジュールの変更、"
+        "新機能・チャンネル追加、バグ修正、観測対象の変更、値の計算や参照が必要な修正など『コード変更が要る』もの。\n"
+        "迷ったら soft。明確にコードが要るときだけ hard。\n"
+        'JSON のみ: {"type":"directive|question|none","skill":"...","directive":"...","ack":"...","scope":"soft|hard"}'
     )
     out = llm.haiku(prompt, max_tokens=300) or ""
     m = re.search(r"\{.*\}", out, re.S)
@@ -201,6 +210,16 @@ def main():
             continue
         typ = c.get("type")
         if typ == "directive":
+            # Slackでは対応できない=コード変更が要る指示は、学習せず正直に返す（Bの本体は別途・保留）
+            if (c.get("scope") or "soft").strip().lower() == "hard":
+                runtime.append_jsonl("code_requests.jsonl", {
+                    "ts": runtime.now_ts(), "channel": ch, "thread": root,
+                    "text": m["text"], "directive": (c.get("directive") or "").strip()})
+                msg = ("ご指摘ありがとうございます！\n"
+                       "この内容は Slack では対応できないので、Claude Codeをお使いください。")
+                source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(msg)}")
+                acted += 1
+                continue
             skill = c.get("skill") if c.get("skill") in SKILLS else "general"
             directive = (c.get("directive") or "").strip()
             if not directive:
