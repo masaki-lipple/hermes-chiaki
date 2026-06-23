@@ -96,8 +96,14 @@ def _compose(mode: str, date: str, since: float):
     body = llm.haiku(prompt, max_tokens=300)
     if not body:
         return None
-    parts = [p.strip() for p in body.split("|||") if p.strip()]  # 必ず報告/詳細/ラポートの3行へ
-    return "\n".join(parts) if len(parts) == 3 else body.strip()
+    body = body.strip()
+    # 必ず 報告/詳細/ラポート の3行へ。Haiku は |||・|・改行 のどれで区切るか揺れるので全部試す
+    for sep in ("|||", "｜", "|"):
+        parts = [p.strip() for p in body.split(sep) if p.strip()]
+        if len(parts) == 3:
+            return "\n".join(parts)
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    return "\n".join(lines) if len(lines) == 3 else body
 
 
 def main():
