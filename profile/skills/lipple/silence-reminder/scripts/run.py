@@ -9,10 +9,24 @@ from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
 from lib import observe, runtime, source  # noqa: E402
 
-REMINDER_TMPL = (
-    "<@{user}>\n"
-    "最後のご報告から{gap}分ほど空いています。進捗報告お願いします！"
-)
+# 固定フォールバック文（Haiku 生成が失敗した時に必ず出す）
+FALLBACK_BODY = "最後のご報告から{gap}分経過しています。進捗報告お願いします！"
+
+
+def _compose(gap_min, now_ts) -> str:
+    """本文を作る。Haiku で毎回少しゆらがせ、失敗時は固定文。@メンションは呼び側で付与。"""
+    import datetime as _dt
+    gap = int(gap_min)
+    fb = FALLBACK_BODY.format(gap=gap)
+    try:
+        from lib import llm
+        hour = _dt.datetime.fromtimestamp(now_ts, _dt.timezone(_dt.timedelta(hours=9))).hour
+        prompt = (f"松永さんへの進捗リマインドを書いてください。"
+                  f"最後の報告から{gap}分経過。現在は{hour}時台。"
+                  f"必ず含める情報: 経過が{gap}分であること、進捗報告の依頼。宛名(@)は付けず本文だけ。")
+        return llm.haiku(prompt) or fb
+    except Exception:
+        return fb
 
 
 def main():
@@ -36,7 +50,8 @@ def main():
         return
 
     last = today_msgs[-1]
-    text = REMINDER_TMPL.format(user=last["user_id"], gap=int(dec["gap_min"]))
+    body = _compose(dec["gap_min"], now)
+    text = f"<@{last['user_id']}>\n{body}"
     source.post_thread_reply(ch, dec["target_ts"], text)
     # 連打防止フラグ
     t["already_reminded_after_ts"] = last["ts_float"]
