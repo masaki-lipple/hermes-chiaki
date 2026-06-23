@@ -67,22 +67,30 @@ def _answer(question: str, ch: str, root: str) -> str:
     except Exception:
         return ""
     thread = source.read_thread(ch, root)
-    convo = "\n".join(f"- {(m.get('user_name') or m.get('user_id') or '?')}: {m.get('text', '')[:160]}"
-                      for m in thread[-12:])
-    tuning = runtime.load_json("tuning.json", {})
-    learned = "; ".join(d.get("directive", "") for lst in tuning.values() for d in lst) or "（まだ無し）"
-    today = dt.datetime.now(JST).strftime("%Y-%m-%d")
-    fk = Counter(f.get("kind") for f in runtime.read_jsonl("findings.jsonl") if _tsd(f.get("ts")) == today)
-    rv = Counter(r.get("verdict") for r in runtime.read_jsonl("rulings.jsonl") if _tsd(r.get("ts")) == today)
-    prompt = (
-        "あなたは Chiaki AI。戸田さんの依頼に簡潔に答えます（テキストのみ・絵文字なし・です/ます・要点）。"
-        "分からないことは推測せず正直に言う。\n"
-        f"依頼: {question}\n"
-        f"このスレッドのやりとり:\n{convo}\n"
-        f"あなたが学習済みの指示(tuning): {learned}\n"
-        f"本日の観測: 表記{fk.get('notation', 0)}・誤字{fk.get('typo', 0)}・停滞{fk.get('stall', 0)}件、"
-        f"裁定 GO/反映{rv.get('go', 0) + rv.get('interpret', 0)}・完了{rv.get('completed', 0)}件。"
-    )
+    convo = "\n".join(f"- {(m.get('user_name') or m.get('user_id') or '?')}: {m.get('text', '')[:200]}"
+                      for m in thread[-15:])
+    # 「このやりとり/今回/ここ」と言われたら、このスレッドの会話内だけから拾う（全体tuningを持ち出さない）
+    scoped = any(w in question for w in ("このやりとり", "ここ", "今回", "この件",
+                                         "このスレッド", "この流れ", "この会話", "上記"))
+    prompt = ("あなたは Chiaki AI。戸田さんの依頼に簡潔に答えます（テキストのみ・絵文字なし・です/ます・要点）。"
+              "分からないことは推測せず正直に言う。\n"
+              f"依頼: {question}\n"
+              f"このスレッドのやりとり:\n{convo}\n")
+    if scoped:
+        prompt += ("依頼は『このやりとり/今回』に限定されています。"
+                   "**上の『このスレッドのやりとり』の中で実際に出た指摘・合意・変更点だけ**を拾って答えてください。"
+                   "スレッド外の一般的なレギュレーションや既存の学習済みルールは持ち出さない。"
+                   "このスレッドで該当が無ければ『このやりとりでは特にありません』と答える。")
+    else:
+        tuning = runtime.load_json("tuning.json", {})
+        learned = "; ".join(d.get("directive", "") for lst in tuning.values() for d in lst) or "（まだ無し）"
+        today = dt.datetime.now(JST).strftime("%Y-%m-%d")
+        fk = Counter(f.get("kind") for f in runtime.read_jsonl("findings.jsonl") if _tsd(f.get("ts")) == today)
+        rv = Counter(r.get("verdict") for r in runtime.read_jsonl("rulings.jsonl") if _tsd(r.get("ts")) == today)
+        prompt += (f"あなたが全体で学習済みの指示: {learned}\n"
+                   f"本日の観測: 表記{fk.get('notation', 0)}・誤字{fk.get('typo', 0)}・停滞{fk.get('stall', 0)}件、"
+                   f"裁定 GO/反映{rv.get('go', 0) + rv.get('interpret', 0)}・完了{rv.get('completed', 0)}件。\n"
+                   "依頼に沿って上記から答える。")
     return (llm.haiku(prompt, max_tokens=450) or "").strip()
 
 
