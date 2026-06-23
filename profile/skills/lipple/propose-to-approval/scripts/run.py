@@ -35,8 +35,16 @@ def _rules():
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
 
+def _corrections(kind: str, n: int = 3) -> list:
+    """過去に戸田さんが文面修正した例（同種・直近n件）。apply-ruling が記録。"""
+    rows = [r for r in runtime.read_jsonl("style_corrections.jsonl")
+            if r.get("kind") == kind and r.get("corrected")]
+    return rows[-n:]
+
+
 def _draft(f: dict, rules: dict) -> str:
-    """松永さんへ送る想定の指摘文面案を Haiku で。失敗時はテンプレ。自己チェックで規約準拠。"""
+    """松永さんへ送る想定の指摘文面案を Haiku で。失敗時はテンプレ。
+    戸田さんの過去の文面修正を few-shot で渡し、言い回しを学習させる（§5 調教）。"""
     iss = f.get("issue", {}) or {}
     found, suggest = iss.get("found", ""), iss.get("suggest", "")
     if f["kind"] == "stall":
@@ -45,8 +53,14 @@ def _draft(f: dict, rules: dict) -> str:
         base = f"{KINDJP[f['kind']]}: 「{found}」→「{suggest}」の修正のお願い。"
     try:
         from lib import llm
+        shot = ""
+        ex = _corrections(f["kind"])
+        if ex:
+            lines = "\n".join(f"- 案『{r['original']}』→ 戸田さん採用『{r['corrected']}』" for r in ex)
+            shot = ("\n以下は戸田さんが過去に直した例。言い回し・長さ・温度感をこの傾向に寄せる"
+                    "（内容は今回の指摘に合わせる。例文の固有名や語はそのまま流用しない）:\n" + lines)
         prompt = (f"松永さんへ送る指摘の文面案を1〜2文で書いてください。内容: {base} "
-                  f"対象報告の抜粋: {f.get('excerpt', '')[:60]}。理由を一言添える。宛名(@)は付けず本文だけ。")
+                  f"対象報告の抜粋: {f.get('excerpt', '')[:60]}。理由を一言添える。宛名(@)は付けず本文だけ。" + shot)
         # 注: 提案文は誤例「sns」等を説明上わざと含むので、ここでは自己チェック(apply_notation_fixes)を掛けない。
         return llm.haiku(prompt) or base
     except Exception:
