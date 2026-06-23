@@ -76,11 +76,17 @@ def main():
 
 
 def _load_rules():
-    # 本番は用語辞書DBから同期した JSON。ローカル/暫定は fixtures。
-    p = Path(os.environ.get("HERMES_NOTATION_RULES")
-             or Path(__file__).resolve().parents[5] / "fixtures/notion/notation_rules.json")
+    # 本番は sync_notation.py が state/notation_rules.json を生成（用語辞書+レギュレーションDB）。
+    # ローカル検証は fixtures に fallback。
     import json
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"terms": [], "acronyms": []}
+    for p in [
+        Path(os.environ["HERMES_NOTATION_RULES"]) if os.environ.get("HERMES_NOTATION_RULES") else None,
+        runtime.STATE_DIR / "notation_rules.json",
+        Path(__file__).resolve().parents[5] / "fixtures/notion/notation_rules.json",
+    ]:
+        if p and p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    return {"terms": [], "acronyms": [], "style_rules": []}
 
 
 if __name__ == "__main__":
