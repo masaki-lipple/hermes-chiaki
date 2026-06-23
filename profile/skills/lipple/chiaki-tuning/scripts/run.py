@@ -54,16 +54,26 @@ def main():
     if not recent:
         print("[tuning] no messages")
         return
+    pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
+    open_threads = {ts for ts, it in pend.items()
+                    if it.get("status") in ("pending", "awaiting_completion")}
     cur = runtime.load_json("tuning_cursor.json", {})
     since = float(cur.get(ch, 0.0))
-    # 戸田さんのトップレベル新規投稿のみ（提案=chiaki投稿／裁定=スレッド返信 は対象外）
-    new = [m for m in recent if m["user_id"] == runtime.TODA and m["ts_float"] > since]
-    if not new:
+    # 戸田さんのフィードバック＝トップレベル投稿＋chiakiのスレッド内返信（提案スレ=裁定はapply-ruling領分で除外）
+    cand = []  # (msg, ack_root_ts)
+    for m in recent:
+        if m["user_id"] == runtime.TODA and m["ts_float"] > since:
+            cand.append((m, m["ts"]))
+        if m.get("thread_replies") and m["ts"] not in open_threads:
+            for r in source.read_thread(ch, m["ts"]):
+                if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since:
+                    cand.append((r, m["ts"]))  # ack はそのスレッドへ返す
+    if not cand:
         print("[tuning] no new feedback")
         return
     tuning = runtime.load_json("tuning.json", {})
     maxts, learned = since, 0
-    for m in sorted(new, key=lambda x: x["ts_float"]):
+    for m, root in sorted(cand, key=lambda x: x[0]["ts_float"]):
         maxts = max(maxts, m["ts_float"])
         c = _classify(m["text"])
         if not c or not c.get("is_feedback"):
@@ -75,7 +85,7 @@ def main():
         tuning.setdefault(skill, []).append({"directive": directive, "ts": runtime.now_ts()})
         tuning[skill] = tuning[skill][-CAP:]
         ack = (c.get("ack") or "").strip() or f"承知しました。{skill} に反映します。"
-        source.post_thread_reply(ch, m["ts"], f"<@{runtime.CHIAKI_SELF}>\n{ack}")
+        source.post_thread_reply(ch, root, f"<@{runtime.CHIAKI_SELF}>\n{ack}")
         learned += 1
     runtime.save_json("tuning.json", tuning)
     cur[ch] = maxts
