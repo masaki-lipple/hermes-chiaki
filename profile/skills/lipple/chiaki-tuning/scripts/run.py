@@ -21,7 +21,7 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import runtime, source  # noqa: E402
 
 SKILLS = {"silence", "pdca", "propose", "notation", "stall", "general"}
-CAP = 8
+CAP = 12  # skill ごとに保持する指示の最大数（トンマナ一括ロードに対応）
 JST = dt.timezone(dt.timedelta(hours=9))
 
 
@@ -73,7 +73,8 @@ def _answer(question: str, ch: str, root: str) -> str:
     scoped = any(w in question for w in ("このやりとり", "ここ", "今回", "この件",
                                          "このスレッド", "この流れ", "この会話", "上記"))
     prompt = ("あなたは Chiaki AI。戸田さんの依頼に簡潔に答えます（テキストのみ・絵文字なし・です/ます・要点）。"
-              "分からないことは推測せず正直に言う。\n"
+              "分からないことは推測せず正直に言う。"
+              "出力は Slack 記法（太字は *一重アスタリスク*。**二重アスタリスク** は使わない）。\n"
               f"依頼: {question}\n"
               f"このスレッドのやりとり:\n{convo}\n")
     if scoped:
