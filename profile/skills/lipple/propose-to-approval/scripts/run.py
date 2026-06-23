@@ -39,9 +39,8 @@ def _draft(f: dict, rules: dict) -> str:
         from lib import llm
         prompt = (f"松永さんへ送る指摘の文面案を1〜2文で書いてください。内容: {base} "
                   f"対象報告の抜粋: {f.get('excerpt', '')[:60]}。理由を一言添える。宛名(@)は付けず本文だけ。")
-        body = llm.haiku(prompt) or base
-        body, _ = observe.apply_notation_fixes(body, rules)
-        return body
+        # 注: 提案文は誤例「sns」等を説明上わざと含むので、ここでは自己チェック(apply_notation_fixes)を掛けない。
+        return llm.haiku(prompt) or base
     except Exception:
         return base
 
