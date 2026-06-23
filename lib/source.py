@@ -104,3 +104,11 @@ def post_message(channel_id: str, text: str) -> dict:
         print(f"[DRY post] ch={channel_id}\n  {text}")
         return {"ok": True, "dry": True}
     return _api_post("chat.postMessage", {"channel": channel_id, "text": text})
+
+
+def update_message(channel_id: str, ts: str, text: str) -> dict:
+    """自分(chiaki)の既存投稿を編集（chat.update）。学習内容を投稿に反映する用。"""
+    if FIXTURES or not _TOKEN:
+        print(f"[DRY update] ch={channel_id} ts={ts}\n  {text}")
+        return {"ok": True, "dry": True}
+    return _api_post("chat.update", {"channel": channel_id, "ts": ts, "text": text})
