@@ -95,38 +95,42 @@ def _answer(question: str, ch: str, root: str) -> str:
     return (llm.haiku(prompt, max_tokens=450) or "").strip()
 
 
-def _revise(text: str, skill: str) -> str:
-    """既存投稿を、学習済み指示に従って最小限だけ修正（事実・構成は変えない）。Haiku・ツール無し。"""
+def _revise(text: str, skill: str, instruction: str = "") -> str:
+    """既存投稿を、今回の指示(最優先)＋学習済み指示に従って最小限だけ修正。Haiku・ツール無し。"""
     if not (text or "").strip():
         return ""
     try:
         from lib import llm
     except Exception:
         return ""
-    directives = list(dict.fromkeys(runtime.load_tuning(skill)))  # skill＋general・重複排除
+    directives = list(dict.fromkeys(
+        ([instruction.strip()] if instruction.strip() else []) + runtime.load_tuning(skill)))
     if not directives:
         return ""
     n = text.count("\n")
-    prompt = ("次の Chiaki AI の投稿を、以下の指示に従って最小限だけ修正してください。"
-              "**改行位置と行数は厳守（行を結合も分割もしない。各行をその行の中だけで直す）**。"
-              "事実・数字・構成は変えない。文体/表記/句読点/記号だけ直す。先頭の <!channel> はそのまま残す。"
-              "修正後の本文のみ出力（前置きなし）。\n"
+    prompt = ("次の Chiaki AI の投稿を、以下の指示に従って最小限だけ修正してください（先頭の指示を最優先）。"
+              "**改行位置と行数は厳守（行を結合も分割もしない）**。事実・数字・構成は変えない。"
+              "先頭の <@..> や <!channel> はそのまま残す。修正後の本文のみ出力（前置きなし）。\n"
               f"指示: {'; '.join(directives)}\n投稿:\n{text}")
     out = (llm.haiku(prompt, max_tokens=400) or "").strip()
     # 行数が変わった＝構成を壊したら採用しない（3行ルール等を守る）
     return out if (out and out.count("\n") == n and out != text) else ""
 
 
-def _maybe_edit_root(ch: str, root: str, skill: str):
-    """指摘対象の投稿(root)が chiaki の投稿なら、学習内容を反映して編集（chat.update）。"""
-    rmsg = next((x for x in source.read_thread(ch, root) if x.get("ts") == root), None)
-    if not rmsg or rmsg.get("user_id") != runtime.CHIAKI_SELF:
+def _maybe_edit_root(ch: str, root: str, skill: str, instruction: str = ""):
+    """指摘対象＝スレッド内の最新の実質的な chiaki 投稿（自分のack＝<@CHIAKI_SELF>始まりは除く）を編集。"""
+    self_tag = f"<@{runtime.CHIAKI_SELF}>"
+    posts = [m for m in source.read_thread(ch, root)
+             if m.get("user_id") == runtime.CHIAKI_SELF
+             and not (m.get("text") or "").lstrip().startswith(self_tag)]
+    if not posts:
         return
+    target = posts[-1]  # 最新の実質投稿（提案/完了通知/PDCA等。ack は除外）
     edit_skill = "pdca" if ch == runtime.CH_CHIAKI_PDCA else skill
-    revised = _revise(rmsg.get("text", ""), edit_skill)
-    if revised and revised.strip() != (rmsg.get("text", "") or "").strip():
-        source.update_message(ch, root, revised)
-        print(f"[tuning] edited root post ch={ch} ts={root}")
+    revised = _revise(target.get("text", ""), edit_skill, instruction)
+    if revised and revised.strip() != (target.get("text", "") or "").strip():
+        source.update_message(ch, target["ts"], revised)
+        print(f"[tuning] edited post ch={ch} ts={target['ts']}")
 
 
 def _candidates(cur: dict):
@@ -177,7 +181,7 @@ def main():
             tuning[skill] = tuning[skill][-CAP:]
             ack = (c.get("ack") or "").strip() or f"承知しました。{skill} に反映します。"
             source.post_thread_reply(ch, root, f"<@{runtime.CHIAKI_SELF}>\n{ack}")
-            _maybe_edit_root(ch, root, skill)  # 学習内容を指摘対象の投稿に反映して編集
+            _maybe_edit_root(ch, root, skill, directive)  # 指摘対象の実質投稿を、今回の指示で編集
             acted += 1
         elif typ == "question":
             ans = _answer(m["text"], ch, root)

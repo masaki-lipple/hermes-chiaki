@@ -202,7 +202,7 @@ def _phase_completion(items: dict) -> int:
             # 完了（検証OK、または検証不能だが報告あり）→ お礼＋戸田さんへ完了通知
             source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_thanks()}")
             done_ts = report["ts"] if report else src_ts
-            link = _permalink(src_ch, done_ts, src_ts)
+            link = _permalink(src_ch, src_ts, src_ts)  # 該当箇所（修正された元メッセージ）への直リンク
             source.post_thread_reply(
                 runtime.CH_CHIAKI_MGMT, tts,
                 f"<@{runtime.TODA}>\n松永さんが修正を完了しました。\n\n{link}\n\nーーーーー")
