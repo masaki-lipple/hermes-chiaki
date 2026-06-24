@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""chiaki-tuning（指摘の起票経路・1窓口 / 決定論＋Haiku・ツール無し＝安全）。
+"""chiaki-intake（指摘の起票経路・1窓口 / 決定論＋Haiku・ツール無し＝安全）。
 
 戸田さんの指摘を Haiku で種別判定し、**必ず一度きいてから**該当 Notion DB に未対応/未承認で起票する（着手C）。
   - issue : 不具合・要望（既存 hard 相当）→ 案提示→確認→ Issue_Chiaki_AI_DB（未対応・種別 バグ/変更/新機能/その他）

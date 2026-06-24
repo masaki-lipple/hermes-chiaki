@@ -1,5 +1,5 @@
 ---
-name: chiaki-tuning
+name: chiaki-intake
 description: 戸田さんの @メンション/投稿を Haiku で issue/rule に振り分け、必ず一度きいてから Issue_DB(未対応)/Rule Registry(未承認) に起票する1窓口。会話エージェントは使わない（安全）。
 metadata:
   hermes:
@@ -7,7 +7,7 @@ metadata:
     model: claude-haiku-4-5
 ---
 
-# chiaki-tuning（指摘の起票経路・@メンション1窓口）
+# chiaki-intake（指摘の起票経路・@メンション1窓口）
 
 戸田さんの指摘を**1つの窓口**で受け、Chiaki AI が Issue か Rule かを判定して**必ず一度きいてから**該当 Notion DB に未対応/未承認で起票する（着手C）。会話エージェントは持たない（決定論＋Haiku のみ）。
 
@@ -28,6 +28,6 @@ metadata:
 - 承認→正本反映（用語辞書/レギュレーション/Style）は別フロー（人が承認）。**未承認/未対応は本番不反映**。
 
 ## 起動・状態
-- `event-listener` が即時起動（@メンション＝どこでも／確認待ちスレッド返信／`event_id` で重複排除）＋ cron `*/2 9-19` backstop。flock `/tmp/chiaki_tuning.lock`。
+- `event-listener` が即時起動（@メンション＝どこでも／確認待ちスレッド返信／`event_id` で重複排除）＋ cron `*/2 9-19` backstop。flock `/tmp/chiaki_intake.lock`。
 - 状態 `chiaki_intake.json`（案→確認の2ターン・status awaiting_confirm/filed/cancelled/expired・24h失効）。返信は焼いたスタイル（`llm.haiku` system）＋`observe.enforce_regulations`＋句読点。
 - 旧 soft→`tuning.json` 自動学習は廃止（rule として Rule Registry へ＝承認ゲート経由・lang-rules 正本モデルと整合）。生成側（silence/pdca/propose）の既存 `tuning.json` は凍結利用。

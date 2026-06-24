@@ -35,20 +35,20 @@ def _run_apply():
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-# chiaki-tuning（#8902/#5902 の戸田さん投稿＝指示は学習・質問は回答）も即時起動
-_TUNE = os.path.join(os.environ["HERMES_PROFILE_DIR"], "skills/lipple/chiaki-tuning/scripts/run.py")
-_gt = {"__file__": _TUNE, "__name__": "chiaki_tuning_mod"}
-exec(compile(open(_TUNE).read(), _TUNE, "exec"), _gt)
-_tuning_main = _gt["main"]
-TUNE_LOCK = "/tmp/chiaki_tuning.lock"
+# chiaki-intake（@メンション/指摘＝issue/rule 振り分け・質問は回答）も即時起動
+_INTAKE = os.path.join(os.environ["HERMES_PROFILE_DIR"], "skills/lipple/chiaki-intake/scripts/run.py")
+_gi = {"__file__": _INTAKE, "__name__": "chiaki_intake_mod"}
+exec(compile(open(_INTAKE).read(), _INTAKE, "exec"), _gi)
+_intake_main = _gi["main"]
+INTAKE_LOCK = "/tmp/chiaki_intake.lock"
 
 
-def _run_tuning():
-    """flock を取って chiaki-tuning を実行（crontab と排他）。"""
-    with open(TUNE_LOCK, "w") as lf:
+def _run_intake():
+    """flock を取って chiaki-intake を実行（crontab と排他）。"""
+    with open(INTAKE_LOCK, "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
-            _tuning_main()
+            _intake_main()
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
@@ -68,7 +68,7 @@ def _is_relevant(ch: str, thread_ts: str) -> bool:
 
 
 def _is_intake_thread(ch: str, thread_ts: str) -> bool:
-    """その返信が chiaki-tuning の確認待ち（awaiting_confirm）スレッドか＝確認ターンを即時起動。"""
+    """その返信が chiaki-intake の確認待ち（awaiting_confirm）スレッドか＝確認ターンを即時起動。"""
     if not thread_ts:
         return False
     items = runtime.load_json("chiaki_intake.json", {"items": {}}).get("items", {})
@@ -122,7 +122,7 @@ def main():
         elif user == runtime.TODA and (etype == "app_mention"
                                        or ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)
                                        or _is_intake_thread(ch, tts)):
-            action = "tune"
+            action = "intake"
         if not action:
             return
         if _dup((req.payload or {}).get("event_id") or f"{ch}:{ev.get('ts')}"):
@@ -132,14 +132,14 @@ def main():
                 print(f"[listener] ruling event ch={ch} thread={tts} -> apply-ruling", flush=True)
                 _run_apply()
             else:
-                print(f"[listener] toda {etype} ch={ch} -> chiaki-tuning(intake) (即時)", flush=True)
-                _run_tuning()
+                print(f"[listener] toda {etype} ch={ch} -> chiaki-intake (即時)", flush=True)
+                _run_intake()
         except Exception as e:
             print(f"[listener] handler error: {e}", flush=True)
 
     client.socket_mode_request_listeners.append(handle)
     client.connect()
-    print("[listener] connected (Socket Mode: apply-ruling裁定/完了 ＋ chiaki-tuning即時)", flush=True)
+    print("[listener] connected (Socket Mode: apply-ruling裁定/完了 ＋ chiaki-intake即時)", flush=True)
     threading.Event().wait()
 
 

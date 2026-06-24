@@ -74,7 +74,7 @@ def record_finding(kind: str, payload: dict) -> None:
 
 
 def load_tuning(skill: str, n: int = 6) -> list:
-    """戸田さんが #8902 で与えた調整指示（chiaki-tuning が tuning.json に蓄積）。
+    """既存 tuning.json（旧 soft 学習の凍結データ）。新規調整は chiaki-intake が Rule Registry へ起票（自動蓄積は廃止）。
     指定 skill＋general の直近 n 件を返す。各生成（silence/pdca/propose）が文面に反映する。"""
     t = load_json("tuning.json", {})
     items = list(t.get(skill, [])) + list(t.get("general", []))

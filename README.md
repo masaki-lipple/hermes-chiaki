@@ -58,8 +58,8 @@ Notion: 🎯 タスク_DB `331980d4-f840-800b-8bde-f6669422aeb1` / 用語辞書 
 | propose-to-approval | findings(表記/誤字/停滞) を #8902 に「提案」 | #8902 |
 | apply-ruling | 裁定実行＋完了追跡＋未完了リマインド | #8902→#5035/#a027 |
 | chiaki-pdca | 自己PDCA（9時計画/毎時/18時終了・@channel・3行） | #5902 |
-| chiaki-tuning | Slack内フィードバック（soft学習 / hard=Issue起票 / 質問回答） | #8902・#5902 |
-| event-listener | Socket Mode 即時起動デーモン（apply-ruling / chiaki-tuning） | 常駐 |
+| chiaki-intake | 指摘の起票1窓口（@メンション→issue/rule 振り分け→確認→起票・質問回答） | @メンション全般・#8902・#5902 |
+| event-listener | Socket Mode 即時起動デーモン（apply-ruling / chiaki-intake） | 常駐 |
 | notion-write | タスクDB 補完メタ書き込み（status/sync_source は不可侵） | Notion |
 
 ## cron（13・JST）
@@ -73,17 +73,17 @@ Notion: 🎯 タスク_DB `331980d4-f840-800b-8bde-f6669422aeb1` / 用語辞書 
 */1 9-19 平日    apply_ruling       裁定/完了追跡(flock)
 50 17 / 30 18    typo_scan          誤字バッチ(Haiku・1日2回)
 0 9 / 0 10-17 / 0 18 平日  chiaki_pdca   自己PDCA→#5902
-*/2 9-19 平日    chiaki_tuning      Slack内フィードバック(flock)
+*/2 9-19 平日    chiaki_intake      指摘の起票backstop(flock)
 ```
 
 ## 主要フロー
 1. **観測→提案→裁定→促し→完了追跡**：obs-batch/typo-scan/stall-scan が検知 → `findings` → propose が #8902 に「提案：表記/誤字/停滞」＋下書きを投稿（pending 記録）→ **戸田が同スレッドに「GO / 却下 / 自然文の文面修正」を書く（@メンション不要）** → apply-ruling が実行（GO＝下書きそのまま／文面修正＝Haiku で反映）→ 対象スレッド(#5035/#a027)へ @対象者 で促し → `awaiting_completion` → 対象者の完了報告で **松永さんへお礼＋戸田さんへ完了通知**（該当箇所リンク）→ `completed`。未完了は 120 分ごと最大 2 回リマインド。文面修正は `style_corrections` に学習し提案下書きに few-shot 反映。
-2. **即時化**：listener が関連スレッド返信を受けて apply-ruling / chiaki-tuning を即起動。cron は時間ベース処理＋バックストップ。
+2. **即時化**：listener が関連スレッド返信を受けて apply-ruling / chiaki-intake を即起動。cron は時間ベース処理＋バックストップ。
 3. **自己PDCA**：chiaki-pdca が #5902 に 1時間ルールで投稿（9時計画／10-17毎時進捗／18時終了、@channel、報告/詳細/ラポートの3行）。
-4. **Slack内フィードバック（学習）**：戸田の #8902/#5902 投稿を Haiku が分類。
-   - **soft**（言い回し・トーン・形式・句読点・レギュレーション用語）→ `tuning.json` に学習し、各生成（silence/pdca/propose）と当該1投稿の編集に反映。
-   - **hard**（リンク/ID 差替・ロジック・しきい値・時間・新機能・バグ・複数/過去投稿の一括修正）→ 学習せず **Chiaki_AI Issue_DB に自動起票**し、「Slackのやりとりでは対応できないので、AIコーディングエージェントをお使いください！」と正直に返信（チケットURL付き）。
-   - **question** → スレッド＋tuning＋観測の状態から Haiku がテキスト回答（ツール無し＝安全）。
+4. **指摘の起票（@メンション1窓口・着手C）**：戸田の @メンション/#8902/#5902 投稿を Haiku が振り分け、**必ず一度きいてから**起票（2ターン・振り分けは上書き可）。会話エージェントは使わない。
+   - **rule**（言葉のルール＝旧 soft：トーン/用語/表記）→ 案提示→確認→ Rule Registry（未承認）。承認→正本（用語/レギュレーション/Style）→翌日 sync で反映。
+   - **issue**（不具合・要望＝旧 hard：バグ/変更/新機能）→ 案提示→確認→ Chiaki_AI Issue_DB（未対応）。Claude Code でのバグ潰しバックログ。
+   - **edit**→その場で編集／**question**→Haiku がテキスト回答／**unclear**→確認質問／**none**→何もしない（ツール無し＝安全）。
 5. **修正報告フロー**（コーディングエージェント側）：コードを直したら **#8902 に「報告：コード修正」を投稿（一覧把握）＋ 該当スレッドにも実態の修正を残す（どこで何を直したか）＋ Issue を「完了」に**。**サイレント修正・削除は禁止**。詳細は `CLAUDE.md`。
 
 ## 観測ルール → 実装

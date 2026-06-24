@@ -1,6 +1,6 @@
 """Notion 書き込みの最小ヘルパ（NOTION_INTEGRATION_TOKEN・urllib・Notion-Version 2022-06-28）。
 
-chiaki-tuning が hard（コード対応が要る）指示を『Chiaki｜変更・バグ リクエスト』DB へ起票する用途。
+chiaki-intake が issue（コード対応＝Issue_DB）と rule（言葉のルール＝Rule Registry）を起票する用途。
 トークン無し（ローカル/テスト）は DRY 出力。要 Hermes Agent インテグレーションへの DB 共有。
 """
 from __future__ import annotations

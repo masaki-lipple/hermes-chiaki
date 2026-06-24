@@ -27,7 +27,7 @@ def _compose(gap_min, now_ts) -> str:
                   f"（例『報告をお願いします！』）。進捗は必ずあるので、へりくだらず言い切る"
                   f"（『もし〜あれば』『〜と嬉しいです』『差し支えなければ』『幸いです』等は使わない）。現在は{hour}時台。"
                   f"絵文字なし・宛名(@)なし・本文のみ。日付や他の時間単位（週/日/時間）は使わない。")
-        tn = runtime.load_tuning("silence")  # 戸田さんの口頭調整（chiaki-tuning が蓄積）を反映
+        tn = runtime.load_tuning("silence")  # 既存 tuning.json（旧 soft 学習の凍結データ）を反映
         if tn:
             prompt += " 戸田さんの指示（必ず守る）: " + "; ".join(tn) + "。"
         body = llm.haiku(prompt) or fb
