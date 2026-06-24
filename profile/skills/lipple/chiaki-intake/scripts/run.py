@@ -112,9 +112,9 @@ def _propose_text(p: dict) -> str:
     t = p.get("type")
     s = (p.get("要約") or "").strip()
     if t == "issue":
-        return f"Issueに「{s}／種別={p.get('issue_kind') or 'その他'}」で登録しておきますね？"
+        return f"Issueに「{s}／種別={p.get('issue_kind') or 'その他'}」で登録してもいいですか？"
     if t == "rule":
-        return f"{p.get('rule_kind') or 'スタイル'}に「{s}」で登録しておきますね？"
+        return f"{p.get('rule_kind') or 'スタイル'}に「{s}」で登録してもいいですか？"
     return ("これは不具合の話ですか？それとも言葉のルール（トーンや表記）の話ですか？"
             "どう直すのがいいか、もう少し具体的に教えてもらえますか？")
 
@@ -221,34 +221,48 @@ def _resolve_link(raw: str):
 
 
 def _edit_post(tch: str, tts: str, parent: str, instruction: str) -> str:
-    """edited / notfound / norevise を返す（特定できたか・直せたかを区別）。"""
+    """edited / notfound / norevise を返す（特定できたか・直せたかを区別）。
+    機械的な修正（レギュレーション/スペース/全角/URL空行）は決定論を優先し、Haiku には頼らない。"""
     msg = next((x for x in source.read_thread(tch, parent) if x.get("ts") == tts), None)
     if not msg or msg.get("user_id") != runtime.CHIAKI_SELF:
         return "notfound"
-    revised = _revise(msg.get("text", ""), instruction)
-    if revised and revised.strip() != (msg.get("text", "") or "").strip():
+    text = msg.get("text", "")
+    # 1) まず決定論で直す＝確実（曖昧な指示でも表記違反は必ず直る）
+    enforced = observe.enforce_regulations(text)
+    if enforced != text:
+        source.update_message(tch, tts, enforced)
+        print(f"[intake] edited(enforce) ch={tch} ts={tts}")
+        return "edited"
+    # 2) 決定論で変化なし → 具体指示があれば Haiku で（文面の言い換え等）
+    revised = _revise(text, instruction)
+    if revised and revised.strip() != (text or "").strip():
         source.update_message(tch, tts, observe.enforce_regulations(revised))
-        print(f"[intake] edited post ch={tch} ts={tts}")
+        print(f"[intake] edited(revise) ch={tch} ts={tts}")
         return "edited"
     return "norevise"
 
 
 def _maybe_edit_root(ch: str, root: str, instruction: str = "", raw: str = "") -> str:
-    """『この投稿を今直して』系。リンク先 or 同スレッド最新の実質 chiaki 投稿（ack除く）を最小修正。
-    edited / notfound / norevise を返す。"""
+    """『この投稿を今直して』系。優先順＝① raw 内 permalink、② スレッド先頭（戸田が指摘している“この投稿”）、
+    ③ 同スレッド最新の実質 chiaki 投稿（ack除く）。edited / notfound / norevise を返す。"""
     resolved = _resolve_link(raw)
     if resolved:
         return _edit_post(*resolved, instruction)
+    thread = source.read_thread(ch, root)
+    rootmsg = next((m for m in thread if m.get("ts") == root), None)
+    if rootmsg and rootmsg.get("user_id") == runtime.CHIAKI_SELF:
+        return _edit_post(ch, root, root, instruction)  # スレッドで指摘される“この投稿”＝先頭
     self_tag = f"<@{runtime.CHIAKI_SELF}>"
-    posts = [m for m in source.read_thread(ch, root)
+    posts = [m for m in thread
              if m.get("user_id") == runtime.CHIAKI_SELF
              and not (m.get("text") or "").lstrip().startswith(self_tag)]
     return _edit_post(ch, posts[-1]["ts"], root, instruction) if posts else "notfound"
 
 
 _EDIT_MSG = {
-    "edited": "修正しました！",
-    "norevise": "その投稿は見つけましたが、うまく直せませんでした。どう直すか、もう少し具体的に教えてもらえますか？",
+    "edited": "直しました！",
+    "norevise": ("うまく汲み取れませんでした。Slack で直せる表記の話なら、どこをどう直すか具体的に教えてください。"
+                 "ロジックや機能などコード対応が要る内容なら、AIコーディングエージェントをお使いください。"),
     "notfound": "該当の投稿が特定できませんでした。どの投稿か教えてもらえますか？",
 }
 
@@ -347,8 +361,13 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
     if v == "go" and p.get("type") in ("issue", "rule"):
         url = _file_issue(p, it["permalink"], ch) if p["type"] == "issue" else _file_rule(p, it["permalink"])
         it["status"], it["page_url"] = "filed", url
+        # rule は登録するだけでなく、指摘元の投稿も決定論で直す（戸田: 登録＋編集して修正）
+        extra = ""
+        if p["type"] == "rule" and url:
+            if _maybe_edit_root(ch, root, "", it.get("mention_text", "")) == "edited":
+                extra = "\n指摘のあった投稿も直しました。"
         if url:
-            _reply(ch, root, "登録しました！", url=url)
+            _reply(ch, root, "登録しました！" + extra, url=url)
         elif not notion._token():
             _reply(ch, root, "登録しました！（ローカル確認のため実際の保存はしていません）")
         else:
