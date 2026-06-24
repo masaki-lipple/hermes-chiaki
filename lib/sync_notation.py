@@ -170,6 +170,19 @@ def classify_rules(reg_rows: list, token: str = "") -> dict:
         return {}
 
 
+_PLACEHOLDER = set("〜～（）()・　 /,、。「」『』<>＜＞|｜")
+
+
+def _safe_blind_pattern(w: str) -> bool:
+    """blind 全置換に出してよい誤例パターンか。複数文字・危険語でない・数字始まりでない・構造/区切り文字を含まない。
+    ＝分類器(Haiku/Opus)の取りこぼしがあっても壊れる置換（例 1人→…、一人・1つ→…）を作らない本丸の安全網。"""
+    if len(w) <= 1 or w in RISKY_DENYLIST:
+        return False
+    if w[0].isdigit():
+        return False
+    return not any(c in _PLACEHOLDER for c in w)
+
+
 def build_regulations(yougo_rows: list, reg_rows: list, decidable: dict) -> dict:
     """用語＋レギュレーション → regulations.json。decidable[page_id]==True かつ非危険・非単漢字のみ regex 強制。"""
     term_replacements = []
@@ -195,16 +208,18 @@ def build_regulations(yougo_rows: list, reg_rows: list, decidable: dict) -> dict
         sc = _sel(p, "適用シーン")
         scope = [sc] if sc else ["社内コミュニケーション", "記事・コンテンツ"]
         url = pg.get("url", "")
-        # blind 置換できるのは Opus が安全と判定し、危険語でなく、単漢字でないものだけ
-        risky = any((w in RISKY_DENYLIST) or (len(w) <= 1) for w in wrongs)
-        if wrongs and decidable.get(pg["id"]) and not risky:
+        # blind 置換に出すのは: 分類器が安全判定 ＋ 誤例/正例が綺麗な1:1 ＋ 各誤例が安全パターン。
+        # 不一致(誤例3:正例1 等)や構造文字/数字始まりは notes へ＝分類器の取りこぼしでも壊れる置換を作らない。
+        ok_blind = (bool(decidable.get(pg["id"])) and wrongs and rights
+                    and len(wrongs) == len(rights)
+                    and all(_safe_blind_pattern(w) for w in wrongs))
+        if ok_blind:
             for i, w in enumerate(wrongs):
-                right = rights[i] if i < len(rights) else (rights[0] if rights else "")
-                if not right or right == w:
+                if not rights[i] or rights[i] == w:
                     continue
                 regex_rules.append({
                     "id": f"regu-{pg['id'][:8]}-{i}", "description": rule,
-                    "pattern": re.escape(w), "replace": right,
+                    "pattern": re.escape(w), "replace": rights[i],
                     "scope": scope, "kind": kind, "source_url": url})
         elif wrongs or body:
             notes.append({
