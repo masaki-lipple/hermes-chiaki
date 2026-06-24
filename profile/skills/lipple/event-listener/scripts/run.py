@@ -67,6 +67,29 @@ def _is_relevant(ch: str, thread_ts: str) -> bool:
     return False
 
 
+def _is_intake_thread(ch: str, thread_ts: str) -> bool:
+    """その返信が chiaki-tuning の確認待ち（awaiting_confirm）スレッドか＝確認ターンを即時起動。"""
+    if not thread_ts:
+        return False
+    items = runtime.load_json("chiaki_intake.json", {"items": {}}).get("items", {})
+    return any(it.get("status") == "awaiting_confirm" and it.get("channel") == ch
+               and it.get("thread_root") == thread_ts for it in items.values())
+
+
+def _dup(key: str) -> bool:
+    """Slack の再送・message/app_mention 重複を event_id で弾く（直近500保持）。actionable な時だけ呼ぶ。"""
+    if not key:
+        return False
+    st = runtime.load_json("processed_events.json", {"ids": []})
+    ids = st.get("ids", [])
+    if key in ids:
+        return True
+    ids.append(key)
+    st["ids"] = ids[-500:]
+    runtime.save_json("processed_events.json", st)
+    return False
+
+
 def main():
     from slack_sdk.socket_mode import SocketModeClient
     from slack_sdk.socket_mode.response import SocketModeResponse
@@ -86,17 +109,30 @@ def main():
         if req.type != "events_api":
             return
         ev = (req.payload or {}).get("event", {}) or {}
-        if ev.get("type") != "message" or ev.get("subtype") or ev.get("bot_id"):
+        etype = ev.get("type")
+        if etype not in ("message", "app_mention") or ev.get("subtype") or ev.get("bot_id"):
             return
         if ev.get("user") == runtime.CHIAKI_SELF:
             return
         ch, tts, user = ev.get("channel"), ev.get("thread_ts"), ev.get("user")
+        # 何をするか先に決め、actionable な時だけ event_id で重複排除（message/app_mention の二重も吸収）
+        action = None
+        if _is_relevant(ch, tts):
+            action = "apply"
+        elif user == runtime.TODA and (etype == "app_mention"
+                                       or ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)
+                                       or _is_intake_thread(ch, tts)):
+            action = "tune"
+        if not action:
+            return
+        if _dup((req.payload or {}).get("event_id") or f"{ch}:{ev.get('ts')}"):
+            return
         try:
-            if _is_relevant(ch, tts):
+            if action == "apply":
                 print(f"[listener] ruling event ch={ch} thread={tts} -> apply-ruling", flush=True)
                 _run_apply()
-            elif user == runtime.TODA and ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA):
-                print(f"[listener] toda msg ch={ch} -> chiaki-tuning (即時)", flush=True)
+            else:
+                print(f"[listener] toda {etype} ch={ch} -> chiaki-tuning(intake) (即時)", flush=True)
                 _run_tuning()
         except Exception as e:
             print(f"[listener] handler error: {e}", flush=True)
