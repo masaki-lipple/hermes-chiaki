@@ -10,6 +10,7 @@ box で daily 実行＋配備時に1回。NOTION_INTEGRATION_TOKEN / ANTHROPIC_A
 """
 from __future__ import annotations
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -274,6 +275,38 @@ def fetch_style_markdown(token: str, page_id: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _rule_hash(props: dict) -> str:
+    raw = _txt(props, "誤例") + "|" + _txt(props, "正例") + "|" + _txt(props, "ルール内容")
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def resolve_decidable(active_rows: list, token: str) -> dict:
+    """決定論可フラグを永続キャッシュ（regulations_decided.json）から引き、新規/変更ルールだけ Haiku で再判定。
+    ＝毎日判定し直す揺れを止める（既存ルールの可否は内容ハッシュが変わるまで固定）。{page_id: bool} を返す。"""
+    cache_path = _profile_dir() / "state" / "regulations_decided.json"
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+    except Exception:
+        cache = {}
+    need = [pg for pg in active_rows
+            if cache.get(pg["id"], {}).get("hash") != _rule_hash(pg["properties"])]
+    fresh_n = 0
+    if need:
+        fresh = classify_rules(need, token)  # Haiku・差分だけ
+        now = datetime.datetime.now(JST).isoformat(timespec="seconds")
+        for pg in need:
+            pid = pg["id"]
+            if pid in fresh:  # LLM が判定を返したものだけ確定（失敗分は次回再判定＝Falseで凍結しない）
+                cache[pid] = {"hash": _rule_hash(pg["properties"]), "decidable": bool(fresh[pid]),
+                              "rule": _txt(pg["properties"], "ルール"), "ts": now}
+                fresh_n += 1
+    active_ids = {pg["id"] for pg in active_rows}
+    cache = {k: v for k, v in cache.items() if k in active_ids}  # 非アクティブを掃除
+    _atomic_write(cache_path, json.dumps(cache, ensure_ascii=False, indent=2))
+    print(f"[sync] decided-cache: {len(cache)} rules (fresh classified {fresh_n}/{len(need)} need)")
+    return {pid: bool(cache.get(pid, {}).get("decidable")) for pid in active_ids}
+
+
 def main():
     token = _token()
     yougo_rows = _query(YOUGO_DB, token)
@@ -286,7 +319,7 @@ def main():
 
     # 2) regulations.json（有効のみ・Haiku が強制可否を分類＋denylist で二重ガード）
     active = [r for r in reg_rows if _sel(r["properties"], "ステータス") == "有効"]
-    decidable = classify_rules(active, token)
+    decidable = resolve_decidable(active, token)  # 永続キャッシュ＋差分のみ再判定（揺れ防止）
     reg = build_regulations(yougo_rows, active, decidable)
     _atomic_write(state / "regulations.json", json.dumps(reg, ensure_ascii=False, indent=2))
 
