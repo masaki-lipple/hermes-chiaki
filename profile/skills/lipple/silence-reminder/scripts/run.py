@@ -43,17 +43,8 @@ def _compose(gap_min, now_ts) -> str:
 
 
 def _regulate(text: str) -> str:
-    """生成文をレギュレーション（live同期の notation_rules）に通して自動補正＝自分も規約を守る。"""
-    try:
-        import json as _json
-        rp = runtime.STATE_DIR / "notation_rules.json"
-        if rp.exists():
-            rules = _json.loads(rp.read_text(encoding="utf-8"))
-            fixed, _ = observe.apply_notation_fixes(text, rules)
-            return fixed
-    except Exception:
-        pass
-    return text
+    """生成文をレギュレーション（regulations.json）で決定論補正＝自分も規約を守る（無ければ原文）。"""
+    return observe.enforce_regulations(text)
 
 
 def main():

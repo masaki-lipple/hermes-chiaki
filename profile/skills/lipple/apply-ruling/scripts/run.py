@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime, source  # noqa: E402
+from lib import observe, runtime, source  # noqa: E402
 
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
 REJECT = ("却下", "ng", "見送", "流して", "流す", "スルー", "ボツ", "なしで", "却下で", "やめ", "不要")
@@ -70,7 +70,7 @@ def _interpret(draft: str, reply: str) -> str:
             "『一文足して』『短く』『丁寧に』等の編集指示なら下書きに反映。"
             "出力は松永さんへ送る本文のみ。宛名(@)・前置き・引用符は付けない。"
         )
-        return (llm.haiku(prompt, max_tokens=220) or "").strip()
+        return observe.enforce_regulations((llm.haiku(prompt, max_tokens=220) or "").strip())
     except Exception:
         return ""
 
@@ -79,8 +79,8 @@ def _thanks() -> str:
     """完了報告への短いお礼。Haiku でゆらがせ、失敗時は固定文。"""
     try:
         from lib import llm
-        return llm.haiku("松永さんが指摘どおりに表記を修正してくれたことへの短いお礼を1文。"
-                         "絵文字なし・明るく簡潔・です/ます。") or "修正ありがとうございます！"
+        return observe.enforce_regulations(llm.haiku("松永さんが指摘どおりに表記を修正してくれたことへの短いお礼を1文。"
+                         "絵文字なし・明るく簡潔・です/ます。") or "修正ありがとうございます！")
     except Exception:
         return "修正ありがとうございます！"
 

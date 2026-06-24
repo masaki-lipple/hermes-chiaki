@@ -21,7 +21,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime, source, notion  # noqa: E402
+from lib import observe, runtime, source, notion  # noqa: E402
 
 SKILLS = {"silence", "pdca", "propose", "notation", "stall", "general"}
 CAP = 12  # skill ごとに保持する指示の最大数（トンマナ一括ロードに対応）
@@ -263,12 +263,12 @@ def main():
             tuning[skill] = tuning[skill][-CAP:]
             edited = _maybe_edit_root(ch, root, skill, directive, m["text"])  # 今回の指示で対象投稿を実際に編集
             ack = "修正しました。" if edited else ((c.get("ack") or "").strip() or "承知しました。今後反映します。")
-            source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(ack)}")  # 戸田さん宛て・句読点保証
+            source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(observe.enforce_regulations(ack))}")  # 戸田さん宛て・規約強制＋句読点
             acted += 1
         elif typ == "question":
             ans = _answer(m["text"], ch, root)
             if ans:
-                source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(ans)}")  # 戸田さん宛て
+                source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{runtime.ensure_punct(observe.enforce_regulations(ans))}")  # 戸田さん宛て・規約強制
                 acted += 1
     if tuning:
         runtime.save_json("tuning.json", tuning)

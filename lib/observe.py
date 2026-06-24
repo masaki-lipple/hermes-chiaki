@@ -250,6 +250,94 @@ def apply_notation_fixes(text: str, rules: dict) -> tuple[str, list]:
     return fixed, applied
 
 
+# ── 日本語ルール3層（regulations.json の決定論レイヤー） ─────────────
+def _kana_preceded(text: str, ch: str) -> bool:
+    """text 中の ch のいずれかの出現が、直前に仮名を持つ（＝形式名詞・連用用法）か。"""
+    return any(i > 0 and _is_kana(text[i - 1]) for i, c in enumerate(text) if c == ch)
+
+
+def apply_regulations(text: str, reg: dict, scene: str = "社内コミュニケーション",
+                      mode: str = "report"):
+    """regulations.json の決定論ルールのみ適用（LLM 不使用）。
+    mode='report'  → (text, findings)      findings は notation_check 互換 dict
+    mode='enforce' → (fixed_text, applied)  applied は [(found, suggest, kind)]
+    単漢字は仮名ガード／regex は scene で絞る／正式表記との同一は置換しない。"""
+    findings = []
+    # 1) 頭字語 casing（sns → SNS 等）
+    acro = {a.upper() for a in reg.get("acronyms", [])}
+    for m in _LATIN_RUN.finditer(text):
+        tok = m.group(0)
+        if tok.upper() in acro and tok == tok.lower() and tok != tok.upper():
+            findings.append({"kind": "acronym_casing", "found": tok,
+                             "suggest": tok.upper(), "confidence": "high"})
+    # 2) 用語の誤変換（誤 → 正式表記）
+    for t in reg.get("term_replacements", []):
+        correct = t.get("correct", "")
+        for w in t.get("wrong_patterns", []):
+            if not (w and w in text and w != correct):
+                continue
+            if (t.get("kana_guard") or (len(w) == 1 and _is_kanji(w))) and not _kana_preceded(text, w):
+                continue
+            findings.append({"kind": "misconversion", "found": w,
+                             "suggest": correct, "confidence": "high"})
+    # 3) regex ルール（scene フィルタ・decidable のみ同期済み）
+    rx = []
+    for r in reg.get("regex_rules", []):
+        if scene not in (r.get("scope") or [scene]):
+            continue
+        pat, rep = r.get("pattern", ""), r.get("replace", "")
+        if pat and re.search(pat, text):
+            rx.append((pat, rep, r.get("id") or pat))
+            findings.append({"kind": "regex", "found": r.get("id") or pat,
+                             "suggest": rep, "rule": r.get("description"), "confidence": "high"})
+    uniq = {(f["kind"], f["found"], f["suggest"]): f for f in findings}
+    findings = list(uniq.values())
+    if mode != "enforce":
+        return text, findings
+    fixed, applied = text, []
+    for f in findings:
+        if f["kind"] in ("acronym_casing", "misconversion") and f["found"] in fixed and f["found"] != f["suggest"]:
+            fixed = fixed.replace(f["found"], f["suggest"])
+            applied.append((f["found"], f["suggest"], f["kind"]))
+    for pat, rep, rid in rx:
+        new = re.sub(pat, rep, fixed)
+        if new != fixed:
+            fixed = new
+            applied.append((rid, rep, "regex"))
+    return fixed, applied
+
+
+def load_regulations() -> dict:
+    """regulations.json をロード（HERMES_REGULATIONS env → profile state → repo fixtures → 空）。"""
+    import json as _json
+    import os as _os
+    from pathlib import Path as _Path
+    cands = []
+    if _os.environ.get("HERMES_REGULATIONS"):
+        cands.append(_Path(_os.environ["HERMES_REGULATIONS"]))
+    if _os.environ.get("HERMES_PROFILE_DIR"):
+        cands.append(_Path(_os.environ["HERMES_PROFILE_DIR"]) / "state" / "regulations.json")
+    root = _Path(__file__).resolve().parents[1]
+    cands.append(root / "profile" / "state" / "regulations.json")
+    cands.append(root / "fixtures" / "notion" / "regulations.json")
+    for c in cands:
+        try:
+            if c.exists():
+                return _json.loads(c.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"term_replacements": [], "regex_rules": [], "regulation_notes": [], "acronyms": []}
+
+
+def enforce_regulations(text: str, scene: str = "社内コミュニケーション") -> str:
+    """chiaki 自身の出力を投稿直前に決定論で整える（失敗時は原文・LLM不使用）。"""
+    try:
+        fixed, _ = apply_regulations(text, load_regulations(), scene=scene, mode="enforce")
+        return fixed
+    except Exception:
+        return text
+
+
 # ── §3.6 65分無音リマインド ─────────────────────────────
 SILENCE_THRESHOLD_SEC = 65 * 60
 
