@@ -64,11 +64,13 @@ def _classify_intake(text: str, context: str = ""):
         "スタイル(声/トーン/温度・例『もっとラフに』『！多すぎ』)|用語(固有名詞や語の統一)|レギュレーション(表記/約物/語尾)。\n"
         "- edit: いま出ている“この投稿そのもの”を今すぐ直す依頼（『この一文消して』『今回直して』『ここ柔らかく』）。\n"
         "- question: 質問・依頼（『まとめて』『教えて』『何件？』）。\n"
-        "- unclear: どれか曖昧（『なんか違う』等）。確信が低い時もここ。\n"
+        "- unclear: 指摘だが種別が曖昧（『なんか違う』等）。確信が低い時もここ。\n"
+        "- none: 指摘・依頼・質問のいずれでもない（雑談・お礼・相づち・FYI・了承だけ 等）。何もしない。\n"
         + (f"直前のやりとり(古い順):\n{context}\n" if context else "")
         + f"メッセージ: {body}\n"
-        "要約(title用・一言[:200])・詳細(背景や直し方)・(rule時のみ)誤例/正例・確信度(0〜1) も付ける。迷ったら unclear。\n"
-        'JSON のみ: {"type":"issue|rule|edit|question|unclear","issue_kind":"","rule_kind":"",'
+        "要約(title用・一言[:200])・詳細(背景や直し方)・(rule時のみ)誤例/正例・確信度(0〜1) も付ける。"
+        "指摘・依頼・質問でなければ none。種別が曖昧な“指摘”だけ unclear。\n"
+        'JSON のみ: {"type":"issue|rule|edit|question|unclear|none","issue_kind":"","rule_kind":"",'
         '"要約":"","詳細":"","誤例":"","正例":"","確信度":0.0}'
     )
     out = llm.haiku(prompt, max_tokens=400) or ""
