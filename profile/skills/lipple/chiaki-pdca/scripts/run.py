@@ -70,15 +70,26 @@ def _close_digest(date: str) -> dict:
             "open": sum(1 for it in pend.values() if it.get("status") in ("pending", "awaiting_completion"))}
 
 
+_OBSERVED = (runtime.CH_YU_PDCA, runtime.CH_NICHIJI)  # 始業報告に列挙する観測対象（#5035 松永さん／#a027 日本自動ドア）
+
+
+def _morning_text() -> str:
+    """始業のあいさつ（戸田テンプレ・観測チャンネルをリンクで列挙・決定論／終業・毎時とは別形式）。"""
+    obs = "\n".join(f"<#{c}>" for c in _OBSERVED)
+    return ("おはようございます。\n"
+            "本日の観測を開始します。\n\n"
+            "いくつかのチャンネルを観測し、1時間ルール・表記誤字・予実・停滞を見ます。\n\n"
+            "本日観測するチャンネルはこちらです。\n\n"
+            f"{obs}\n\n"
+            f"気づきや提案は <#{runtime.CH_CHIAKI_MGMT}> に上げ、完了確認とリマインドも行います。\n"
+            "本日もよろしくおねがいします！")
+
+
 def _compose(mode: str, date: str, since: float):
     from lib import llm
     if mode == "morning":
-        prompt = ("Chiaki AI の朝の観測開始PDCAを3行で書いてください。"
-                  "1行目=報告(『おはようございます。』で始め、本日の観測を開始する旨)、"
-                  "2行目=詳細(終日 #5035 松永さんのPDCAと #a027 日本自動ドアを観測し、1時間ルール・表記/誤字・予実・停滞を見る旨)、"
-                  "3行目=ラポート(気づきや提案は #8902 に上げ、完了確認とリマインドも行う旨)。"
-                  "報告・詳細・ラポートの3部を、半角の ||| で区切って1行で返す。改行・前置き・絵文字なし、です/ます、各部1文で簡潔。")
-    elif mode == "progress":
+        return observe.enforce_regulations(_morning_text())  # 始業は戸田テンプレ（決定論・チャンネルリンク列挙）
+    if mode == "progress":
         d = _progress_digest(since, date)
         prompt = ("Chiaki AI の毎時の観測進捗PDCAを3行で書いてください。数字は素材を使う。"
                   f"素材(過去1時間): 松永さんの報告{d['reports']}件、検知(表記{d['notation']}・誤字{d['typo']}・停滞{d['stall']})、"
