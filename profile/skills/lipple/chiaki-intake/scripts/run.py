@@ -180,6 +180,9 @@ def _answer(question: str, ch: str, root: str) -> str:
     return (llm.haiku(prompt, max_tokens=450) or "").strip()
 
 
+_REFLOW_RE = re.compile(r"改行|空行|行間|レイアウト|間隔|スペース|詰め|空け|あけ|開け")
+
+
 def _revise(text: str, instruction: str = "") -> str:
     if not (text or "").strip() or not instruction.strip():
         return ""
@@ -188,12 +191,21 @@ def _revise(text: str, instruction: str = "") -> str:
     except Exception:
         return ""
     n = text.count("\n")
+    # 改行・空白そのものを変える指示（『URLの上は改行して』等）は行数固定を解除する。
+    reflow = bool(_REFLOW_RE.search(instruction))
+    layout = ("指示どおりに改行・空白だけ調整してよい（本文の文言・数字・順序・絵文字は変えない）"
+              if reflow else "改行位置と行数は厳守（行を結合も分割もしない）")
     prompt = ("次の Chiaki AI の投稿を、以下の指示に従って最小限だけ修正してください。"
-              "**改行位置と行数は厳守（行を結合も分割もしない）**。事実・数字・構成は変えない。"
+              f"**{layout}**。事実・数字・構成は変えない。"
               "先頭の <@..> や <!channel> はそのまま残す。修正後の本文のみ出力（前置きなし）。\n"
               f"指示: {instruction}\n投稿:\n{text}")
     out = (llm.haiku(prompt, max_tokens=400) or "").strip()
-    return out if (out and out.count("\n") == n and out != text) else ""
+    if not out or out == text:
+        return ""
+    if reflow:  # 行数は変わってよいが、本文（空白以外）が大きく欠落していないこと
+        a, b = re.sub(r"\s", "", out), re.sub(r"\s", "", text)
+        return out if (a and len(a) >= len(b) * 0.8) else ""
+    return out if out.count("\n") == n else ""
 
 
 _PERMALINK = re.compile(r"/archives/(C[A-Z0-9]+)/p(\d{10})(\d{6})")
@@ -208,20 +220,22 @@ def _resolve_link(raw: str):
     return tch, ts, (tm.group(1) if tm else ts)
 
 
-def _edit_post(tch: str, tts: str, parent: str, instruction: str) -> bool:
+def _edit_post(tch: str, tts: str, parent: str, instruction: str) -> str:
+    """edited / notfound / norevise を返す（特定できたか・直せたかを区別）。"""
     msg = next((x for x in source.read_thread(tch, parent) if x.get("ts") == tts), None)
     if not msg or msg.get("user_id") != runtime.CHIAKI_SELF:
-        return False
+        return "notfound"
     revised = _revise(msg.get("text", ""), instruction)
     if revised and revised.strip() != (msg.get("text", "") or "").strip():
         source.update_message(tch, tts, observe.enforce_regulations(revised))
         print(f"[intake] edited post ch={tch} ts={tts}")
-        return True
-    return False
+        return "edited"
+    return "norevise"
 
 
-def _maybe_edit_root(ch: str, root: str, instruction: str = "", raw: str = "") -> bool:
-    """『この投稿を今直して』系。リンク先 or 同スレッド最新の実質 chiaki 投稿（ack除く）を最小修正。"""
+def _maybe_edit_root(ch: str, root: str, instruction: str = "", raw: str = "") -> str:
+    """『この投稿を今直して』系。リンク先 or 同スレッド最新の実質 chiaki 投稿（ack除く）を最小修正。
+    edited / notfound / norevise を返す。"""
     resolved = _resolve_link(raw)
     if resolved:
         return _edit_post(*resolved, instruction)
@@ -229,7 +243,14 @@ def _maybe_edit_root(ch: str, root: str, instruction: str = "", raw: str = "") -
     posts = [m for m in source.read_thread(ch, root)
              if m.get("user_id") == runtime.CHIAKI_SELF
              and not (m.get("text") or "").lstrip().startswith(self_tag)]
-    return _edit_post(ch, posts[-1]["ts"], root, instruction) if posts else False
+    return _edit_post(ch, posts[-1]["ts"], root, instruction) if posts else "notfound"
+
+
+_EDIT_MSG = {
+    "edited": "修正しました！",
+    "norevise": "その投稿は見つけましたが、うまく直せませんでした。どう直すか、もう少し具体的に教えてもらえますか？",
+    "notfound": "該当の投稿が特定できませんでした。どの投稿か教えてもらえますか？",
+}
 
 
 # ── 候補収集（propose/confirm 両ターン） ───────────────────
@@ -295,8 +316,8 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
         return 0
     typ = c.get("type")
     if typ == "edit":
-        edited = _maybe_edit_root(ch, root, (c.get("詳細") or c.get("要約") or m["text"]), m["text"])
-        _reply(ch, root, "修正しました。" if edited else "該当の投稿が特定できませんでした。どの投稿か教えてもらえますか？")
+        st = _maybe_edit_root(ch, root, m["text"], m["text"])  # 生指示＝改行/空白の語を保つ
+        _reply(ch, root, _EDIT_MSG[st])
         return 1
     if typ == "question":
         ans = _answer(m["text"], ch, root)
@@ -345,9 +366,9 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
         _reply(ch, root, _propose_text(c2))
         return 1
     if c2 and c2.get("type") == "edit":
-        edited = _maybe_edit_root(ch, root, m["text"], m["text"])
+        st = _maybe_edit_root(ch, root, m["text"], m["text"])
         it["status"] = "cancelled"
-        _reply(ch, root, "修正しました。" if edited else "該当の投稿が特定できませんでした。")
+        _reply(ch, root, _EDIT_MSG[st])
         return 1
     return 0
 
