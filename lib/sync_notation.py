@@ -5,7 +5,7 @@
   notation_rules.json  … 既存（obs-batch/notation_check が使用・後方互換のため変えない）
   regulations.json     … 決定論強制レイヤー（term_replacements/regex_rules/regulation_notes）
   style_hermes.md      … スタイル(prose)。lib/llm.py が生成 system に焼く。
-「強制してよい線」は Opus が同期時に分類（blind 置換して安全か）。危険語 denylist＋単漢字は強制しない。
+「強制してよい線」は同期時に LLM(Haiku) が分類（blind 置換して安全か）。危険語 denylist＋単漢字は強制しない（本丸の安全網）。
 box で daily 実行＋配備時に1回。NOTION_INTEGRATION_TOKEN / ANTHROPIC_API_KEY は profile .env か環境変数。標準ライブラリのみ。
 """
 from __future__ import annotations
@@ -129,8 +129,13 @@ _BUILTIN_REGEX = [
 ]
 
 
+# 分類は判断タスクだが、危険語 denylist＋単漢字ガードが本丸の安全網なので Haiku で十分（1日1回・低コスト）。
+# 精度を上げたい時は llm.opus に差し替えるだけ。
+_CLASSIFY_SYS = "あなたは正確な日本語校正・分類アシスタントです。指示に厳密に従い、指定のJSON以外は出力しない。"
+
+
 def classify_rules(reg_rows: list, token: str = "") -> dict:
-    """各レギュレーションを Opus で『blind 置換して安全か』分類。{page_id: bool}。失敗時は空＝全 false（安全側）。"""
+    """各レギュレーションを Haiku で『blind 置換して安全か』分類。{page_id: bool}。失敗時は空＝全 false（安全側）。"""
     items = []
     for pg in reg_rows:
         p = pg["properties"]
@@ -156,7 +161,7 @@ def classify_rules(reg_rows: list, token: str = "") -> dict:
         'JSON のみで返す: {"<id>": true, "<id>": false, ...}'
     )
     try:
-        out = llm.opus(prompt, max_tokens=2000) or ""
+        out = llm.haiku(prompt, system=_CLASSIFY_SYS, max_tokens=2000) or ""
         m = re.search(r"\{.*\}", out, re.S)
         d = json.loads(m.group(0)) if m else {}
         return {k: bool(v) for k, v in d.items()}
@@ -264,7 +269,7 @@ def main():
     rules = build(yougo_rows=yougo_rows, reg_rows=reg_rows)
     _atomic_write(state / "notation_rules.json", json.dumps(rules, ensure_ascii=False, indent=2))
 
-    # 2) regulations.json（有効のみ・Opus が強制可否を分類）
+    # 2) regulations.json（有効のみ・Haiku が強制可否を分類＋denylist で二重ガード）
     active = [r for r in reg_rows if _sel(r["properties"], "ステータス") == "有効"]
     decidable = classify_rules(active, token)
     reg = build_regulations(yougo_rows, active, decidable)
