@@ -95,12 +95,14 @@ def _classify_intake(text: str, context: str = ""):
 
 
 def _verdict(text: str) -> str:
-    """確認ターンの戸田さん返信 → go / reject / reclassify。"""
-    t = (text or "").strip()
-    core = t.strip(" 　。！!.?？")
+    """確認ターンの戸田さん返信 → go / reject / reclassify。
+    @メンション（app_mention 返信で必ず付く）を除去してから判定する（除かないと『はい』が go に一致しない）。"""
+    t = re.sub(rf"{re.escape(MENTION)}|<@U[A-Z0-9]+>", "", text or "").strip()
+    core = t.strip(" 　。、！!.?？\n\r\t")
     if any(w in t for w in _REJECT):
         return "reject"
-    if core.lower() in _GO:
+    tokens = [x for x in re.split(r"[、。！!\?？\s　]+", core) if x]
+    if core.lower() in _GO or any(tok.lower() in _GO for tok in tokens):
         return "go"
     return "reclassify"  # 文面修正・振り分け変更・補足はすべて再分類して再提示
 
