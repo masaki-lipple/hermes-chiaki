@@ -288,12 +288,20 @@ def resolve_decidable(active_rows: list, token: str) -> dict:
         cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
     except Exception:
         cache = {}
-    need = [pg for pg in active_rows
-            if cache.get(pg["id"], {}).get("hash") != _rule_hash(pg["properties"])]
+    now = datetime.datetime.now(JST).isoformat(timespec="seconds")
+    need = []
+    for pg in active_rows:
+        pid, h = pg["id"], _rule_hash(pg["properties"])
+        if cache.get(pid, {}).get("hash") == h:
+            continue  # 既知・未変更 → 再判定しない
+        if not _split(_txt(pg["properties"], "誤例")):
+            # 誤例なし＝blind置換の対象外。False で確定（LLM に出さない・以後 need にしない）
+            cache[pid] = {"hash": h, "decidable": False, "rule": _txt(pg["properties"], "ルール"), "ts": now}
+            continue
+        need.append(pg)
     fresh_n = 0
     if need:
         fresh = classify_rules(need, token)  # Haiku・差分だけ
-        now = datetime.datetime.now(JST).isoformat(timespec="seconds")
         for pg in need:
             pid = pg["id"]
             if pid in fresh:  # LLM が判定を返したものだけ確定（失敗分は次回再判定＝Falseで凍結しない）
