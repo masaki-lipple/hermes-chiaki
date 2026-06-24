@@ -132,9 +132,11 @@ def _file_issue(p: dict, permalink: str, ch: str):
 
 
 def _file_rule(p: dict, permalink: str):
+    # 機械ルール（用語/レギュレーション＝決定論で直せる）は即「承認」、スタイル（判断）は「未承認」
+    status = "承認" if p.get("rule_kind") in ("用語", "レギュレーション") else "未承認"
     return notion.create_rule_registry(p.get("要約", ""), p.get("詳細", ""),
                                        p.get("rule_kind") or "スタイル", slack_url=permalink,
-                                       wrong=p.get("誤例", ""), right=p.get("正例", ""))
+                                       wrong=p.get("誤例", ""), right=p.get("正例", ""), status=status)
 
 
 # ── 既存の再利用ヘルパ（編集・回答・リンク解決） ───────────────
