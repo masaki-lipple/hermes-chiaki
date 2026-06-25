@@ -56,6 +56,73 @@ def _api_post(method: str, payload: dict) -> dict:
         return json.loads(r.read().decode())
 
 
+# ── 箇条書きを Slack ネイティブの rich_text_list（リストタグ）で送る ─────────────
+_INLINE_RE = __import__("re").compile(
+    r"<@([A-Z0-9]+)(?:\|[^>]*)?>|<!(channel|here|everyone)>"
+    r"|<(https?://[^|>]+)(?:\|([^>]*))?>|(https?://[^\s<>]+)")
+_BULLET_RE = __import__("re").compile(r"^[ 　]*(?:•|・|-)[ 　]+(.*)$")
+
+
+def _inline_elements(s: str) -> list[dict]:
+    """1行ぶんのテキストを rich_text のインライン要素列へ（メンション/broadcast/リンク/テキスト）。"""
+    out, i = [], 0
+    for mm in _INLINE_RE.finditer(s):
+        if mm.start() > i:
+            out.append({"type": "text", "text": s[i:mm.start()]})
+        if mm.group(1):
+            out.append({"type": "user", "user_id": mm.group(1)})
+        elif mm.group(2):
+            out.append({"type": "broadcast", "range": mm.group(2)})
+        elif mm.group(3):
+            el = {"type": "link", "url": mm.group(3)}
+            if mm.group(4):
+                el["text"] = mm.group(4)
+            out.append(el)
+        elif mm.group(5):
+            out.append({"type": "link", "url": mm.group(5)})
+        i = mm.end()
+    if i < len(s):
+        out.append({"type": "text", "text": s[i:]})
+    return out or [{"type": "text", "text": s}]
+
+
+def _rich_blocks(text: str):
+    """箇条書き行(•/・/-)を含むテキストを rich_text ブロック化（section と bullet list を交互に）。
+    箇条書きが無ければ None（＝従来どおりプレーンテキスト送信）。失敗時も None でフォールバック。"""
+    try:
+        lines = (text or "").split("\n")
+        if not any(_BULLET_RE.match(ln) for ln in lines):
+            return None
+        els, sec, lst = [], [], []
+
+        def flush_sec():
+            if sec:
+                els.append({"type": "rich_text_section",
+                            "elements": _inline_elements("\n".join(sec))})
+                sec.clear()
+
+        def flush_lst():
+            if lst:
+                els.append({"type": "rich_text_list", "style": "bullet",
+                            "elements": [{"type": "rich_text_section",
+                                          "elements": _inline_elements(it)} for it in lst]})
+                lst.clear()
+
+        for ln in lines:
+            bm = _BULLET_RE.match(ln)
+            if bm:
+                flush_sec()
+                lst.append(bm.group(1))
+            else:
+                flush_lst()
+                sec.append(ln)
+        flush_sec()
+        flush_lst()
+        return [{"type": "rich_text", "elements": els}] if els else None
+    except Exception:
+        return None
+
+
 def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 200) -> list[dict]:
     if FIXTURES:
         fn = _CH_FIXTURE.get(channel_id)
@@ -95,15 +162,22 @@ def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id} thread={thread_ts}\n  {text}")
         return {"ok": True, "dry": True}
-    return _api_post("chat.postMessage", {"channel": channel_id, "thread_ts": thread_ts,
-                                          "text": text})
+    payload = {"channel": channel_id, "thread_ts": thread_ts, "text": text}
+    blocks = _rich_blocks(text)
+    if blocks:
+        payload["blocks"] = blocks
+    return _api_post("chat.postMessage", payload)
 
 
 def post_message(channel_id: str, text: str) -> dict:
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id}\n  {text}")
         return {"ok": True, "dry": True}
-    return _api_post("chat.postMessage", {"channel": channel_id, "text": text})
+    payload = {"channel": channel_id, "text": text}
+    blocks = _rich_blocks(text)
+    if blocks:
+        payload["blocks"] = blocks
+    return _api_post("chat.postMessage", payload)
 
 
 def update_message(channel_id: str, ts: str, text: str) -> dict:
@@ -111,4 +185,8 @@ def update_message(channel_id: str, ts: str, text: str) -> dict:
     if FIXTURES or not _TOKEN:
         print(f"[DRY update] ch={channel_id} ts={ts}\n  {text}")
         return {"ok": True, "dry": True}
-    return _api_post("chat.update", {"channel": channel_id, "ts": ts, "text": text})
+    payload = {"channel": channel_id, "ts": ts, "text": text}
+    blocks = _rich_blocks(text)
+    if blocks:
+        payload["blocks"] = blocks
+    return _api_post("chat.update", payload)
