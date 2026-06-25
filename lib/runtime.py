@@ -43,8 +43,12 @@ def load_json(name: str, default=None):
 
 
 def save_json(name: str, data) -> None:
+    # temp に書いて os.replace で原子的に置換（同一FS）。並行読み手の部分読み取り(JSONDecodeError→空default)を根絶。
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _path(name).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    p = _path(name)
+    tmp = p.with_name(p.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
 
 
 def append_jsonl(name: str, row: dict) -> None:

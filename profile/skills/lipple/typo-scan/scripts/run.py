@@ -106,7 +106,9 @@ def main():
                     "channel": ch, "msg_ts": msg["ts"], "msg_dt": msg["datetime"],
                     "issue": {"found": found, "suggest": suggest}, "excerpt": msg["text"][:80]})
                 total += 1
-        cur[ch] = maxts
+        # MAX_MSGS で切り捨てた未スキャン分(最新側)を飛ばさない＝落とした最小 ts の手前までしか進めない
+        dropped = msgs[MAX_MSGS:]
+        cur[ch] = max(since, min(m["ts_float"] for m in dropped) - 1e-6) if dropped else maxts
     runtime.save_json("typo_cursor.json", cur)
     print(f"[typo-scan] findings={total}")
 

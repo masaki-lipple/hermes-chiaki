@@ -109,8 +109,10 @@ def main():
                 "target_user_id": tgt_id, "target_name": tgt_name,
                 "verify_found": found,  # 完了検証用：修正後メッセージにこの語が残っていたら未修正
                 "status": "pending"}
-        f["status"] = "proposed"
-        posted += 1
+            f["status"] = "proposed"  # 投稿成功時のみ proposed。失敗は new のまま次回再試行（無音失敗禁止）
+            posted += 1
+        else:
+            print(f"[propose] post failed, leave status=new: kind={f['kind']} ch={f.get('channel')}")
     if posted:
         with open(runtime.STATE_DIR / "findings.jsonl", "w", encoding="utf-8") as fh:
             for r in findings:

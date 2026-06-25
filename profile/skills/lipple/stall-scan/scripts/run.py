@@ -29,7 +29,7 @@ def main():
         print("[SILENT] no stalls")
         return
 
-    lines = [f"[停滞検知 {len(cands)}件] now={runtime.__import__('time').strftime('%Y-%m-%d', runtime.__import__('time').gmtime(now+9*3600))}"]
+    lines = [f"[停滞検知 {len(cands)}件] now={runtime.time.strftime('%Y-%m-%d', runtime.time.gmtime(now+9*3600))}"]
     for s in cands:
         lines.append(f"・{','.join(s['signals'])} | {s['task']} | 期限{s['due']} 人活動{s['human_replies']} "
                      f"経過{s['age_days']}日 root_by_bot={s['root_by_bot']}")

@@ -19,8 +19,14 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import observe, runtime, source  # noqa: E402
 
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
-REJECT = ("却下", "ng", "見送", "流して", "流す", "スルー", "ボツ", "なしで", "却下で", "やめ", "不要")
 GO_EXACT = {"go", "ok", "おk", "おけ", "ｏｋ", "ゴー", "承認", "いいね", "了解", "りょうかい", "よし"}
+# 却下＝却下語が文の主旨のときだけ（編集指示の中の部分一致で無音却下しない＝無音失敗禁止）。
+REJECT_EXACT = {"却下", "却下で", "却下します", "ng", "見送り", "見送る", "見送ります", "見送りで",
+                "ボツ", "ボツで", "なしで", "不要", "スルー", "スルーで", "やめて", "流して"}
+_REJECT_SUFFIX = ("却下で", "なしで", "見送りで", "見送りです", "スルーで", "ボツで",
+                  "は却下", "は見送り", "は不要")
+_EDIT_VERB_RE = re.compile(r"足して|書い|直して|削って|消して|短く|長く|丁寧|強め|弱め|"
+                           r"変えて|加えて|入れて|にして|ください|して欲し|してほし|まとめ|やわらか|柔らか")
 # 質問・困惑（裁定ではない）＝ #5035 へ誤爆させず skip する手掛かり
 QUESTION_WORDS = ("どういうこと", "どういう意味", "意味がわからない", "意味が分から",
                   "理解できない", "なぜ", "どうして", "意味不明", "よくわからない", "よくわから")
@@ -46,11 +52,13 @@ def _classify(text: str):
     t = _norm(text)
     if not t:
         return ("skip", "")
-    if any(w in t for w in REJECT):
-        return ("reject", "")
     core = re.sub(r"[\s。、!！.．…~〜ｗw笑👍🙆\U0001F300-\U0001FAFF]+", "", t)
     if core in GO_EXACT:
         return ("go", "")
+    # 却下は『却下語が文の主旨（=core が却下語そのもの/末尾が却下語）かつ編集動詞を含まない』ときだけ。
+    # 『一文足して』『やめ時の表現を直して』等の編集指示を部分一致で無音却下しない。
+    if (core in REJECT_EXACT or core.endswith(_REJECT_SUFFIX)) and not _EDIT_VERB_RE.search(t):
+        return ("reject", "")
     # 質問・困惑（？で終わる or 疑問語）は裁定指示ではない → 投稿しない（#5035 への誤爆防止）
     if t.endswith(("?", "？")) or any(w in t for w in QUESTION_WORDS):
         return ("skip", "")
@@ -157,7 +165,10 @@ def _phase_ruling(items: dict) -> int:
                     continue
             posted = source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{final}")
             nudge_ts = posted.get("ts") if isinstance(posted, dict) else None
-            link = _permalink(src_ch, nudge_ts, src_ts) if nudge_ts else ""
+            if not nudge_ts:  # 投稿失敗(ok:false/network/dry)＝松永さんへ届いていない → 状態を進めず pending のまま再試行
+                print(f"[apply-ruling] {tts}: nudge post returned no ts -> leave pending, retry next run")
+                continue
+            link = _permalink(src_ch, nudge_ts, src_ts)
             if verdict == "interpret" and final.strip() != draft.strip():
                 runtime.append_jsonl("style_corrections.jsonl", {
                     "ts": runtime.now_ts(), "kind": it.get("finding_kind", ""),
