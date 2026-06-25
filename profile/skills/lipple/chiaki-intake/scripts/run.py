@@ -77,6 +77,7 @@ def _classify_intake(text: str, context: str = "") -> list:
         "- rule: 言葉のルールを“今後のルール”として覚えるべき指摘。rule_kind="
         "スタイル(声/トーン/温度・例『もっとラフに』『！多すぎ』)|用語(固有名詞や語の統一)|レギュレーション(表記/約物/語尾)。\n"
         "- edit: いま出ている“この投稿そのもの”を今すぐ直す依頼（『この一文消して』『今回直して』『ここ柔らかく』）。\n"
+        "  ※ただし Chiaki AI 自身の出力の不具合（|||等の区切り混入・改行されない・文字化け・重複など“症状の指摘”）は edit でなく issue(issue_kind=バグ)。edit は内容は正しく言い回しだけ直す依頼に限る。\n"
         "- question: 質問・依頼（『まとめて』『教えて』『何件？』）。\n"
         "- unclear: 指摘だが種別が曖昧（『なんか違う』等）。確信が低い時もここ。\n"
         "- none: 指摘・依頼・質問のいずれでもない（雑談・お礼・相づち・FYI・了承だけ 等）。\n"
@@ -107,15 +108,22 @@ def _classify_intake(text: str, context: str = "") -> list:
     return [_norm_item(c) for c in arr if isinstance(c, dict) and c.get("type")]
 
 
+_APPEND_RE = re.compile(r"記載|追記|加えて|付け加え|盛り込|書いとい|書いてお|入れとい|入れてお|も書いて|も入れて|も記")
+
+
 def _verdict(text: str) -> str:
     """確認ターンの戸田さん返信 → go / reject / reclassify。
-    @メンション（app_mention 返信で必ず付く）を除去してから判定する（除かないと『はい』が go に一致しない）。"""
+    @メンション（app_mention 返信で必ず付く）を除去してから判定する（除かないと『はい』が go に一致しない）。
+    『はい』＋追記指示（「…」引用や“〜も記載して”）は go でなく reclassify＝追記を取り込んで再提示する。"""
     t = re.sub(rf"{re.escape(MENTION)}|<@U[A-Z0-9]+>", "", text or "").strip()
     core = t.strip(" 　。、！!.?？\n\r\t")
     if any(w in t for w in _REJECT):
         return "reject"
     tokens = [x for x in re.split(r"[、。！!\?？\s　]+", core) if x]
     if core.lower() in _GO or any(tok.lower() in _GO for tok in tokens):
+        residual = "".join(tok for tok in tokens if tok.lower() not in _GO)
+        if "「" in t or _APPEND_RE.search(residual):
+            return "reclassify"  # 承認＋追記指示は取りこぼさず再分類して再提示
         return "go"
     return "reclassify"  # 文面修正・振り分け変更・補足はすべて再分類して再提示
 
@@ -187,7 +195,10 @@ def _answer(question: str, ch: str, root: str) -> str:
     scoped = any(w in question for w in ("このやりとり", "ここ", "今回", "この件",
                                          "このスレッド", "この流れ", "この会話", "上記"))
     prompt = ("あなたは Chiaki AI。戸田さんの依頼に簡潔に答えます（テキストのみ・絵文字なし・です/ます・要点）。"
-              "分からないことは推測せず正直に言う。太字や * による強調は使わない。\n"
+              "分からないことは推測せず正直に言う。"
+              "自分の内部実装・コード・不具合の原因は分からないので、聞かれても推測で答えず"
+              "『コードの詳細は分かりかねます。原因調査や修正は Claude Code をお使いください』と正直に答える。"
+              "太字や * による強調は使わない。\n"
               f"依頼: {question}\nこのスレッドのやりとり:\n{convo}\n")
     if scoped:
         prompt += ("依頼は『このやりとり/今回』に限定されています。"
@@ -250,8 +261,10 @@ def _edit_post(tch: str, tts: str, parent: str, instruction: str) -> str:
     """edited / notfound / norevise を返す（特定できたか・直せたかを区別）。
     機械的な修正（レギュレーション/スペース/全角/URL空行）は決定論を優先し、Haiku には頼らない。"""
     msg = next((x for x in source.read_thread(tch, parent) if x.get("ts") == tts), None)
-    if not msg or msg.get("user_id") != runtime.CHIAKI_SELF:
+    if not msg:
         return "notfound"
+    if msg.get("user_id") != runtime.CHIAKI_SELF:
+        return "notself"  # 投稿は在るが Chiaki AI のものでない（戸田自身の投稿リンク等）＝編集対象外
     text = msg.get("text", "")
     # 1) まず決定論で直す＝確実（曖昧な指示でも表記違反は必ず直る）
     enforced = observe.enforce_regulations(text)
@@ -290,6 +303,8 @@ _EDIT_MSG = {
     "norevise": ("うまく汲み取れませんでした。Slack で直せる表記の話なら、どこをどう直すか具体的に教えてください。"
                  "ロジックや機能などコード対応が要る内容なら、AIコーディングエージェントをお使いください。"),
     "notfound": "該当の投稿が特定できませんでした。どの投稿か教えてもらえますか？",
+    "notself": ("そのリンクは Chiaki AI の投稿ではないようです。直すのは Chiaki AI のどの投稿でしょうか。"
+                "直前に起票した内容への追記なら、追記したい文をそのまま教えてください。"),
 }
 
 
@@ -359,6 +374,35 @@ def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
     return 1
 
 
+_SYMPTOM_RE = re.compile(r"\|\|\||｜｜｜?|文字化け|区切り(?:記号|文字)|崩れて|残骸|重複して")
+
+
+def _bug_symptom(instruction: str, ch: str, root: str, raw: str):
+    """Chiaki AI 出力の“症状”指摘（|||混入・文字化け等）か。該当なら issue(バグ) proposal を返す
+    ＝編集で証拠を消す前に、現状テキストを誤例として証拠付き起票へ回す（戸田: 直す前に記録）。"""
+    target = ""
+    try:
+        resolved = _resolve_link(raw)
+        if resolved:
+            tch, tts, parent = resolved
+            msg = next((x for x in source.read_thread(tch, parent) if x.get("ts") == tts), None)
+        else:
+            msg = next((x for x in source.read_thread(ch, root) if x.get("ts") == root), None)
+        if msg and msg.get("user_id") == runtime.CHIAKI_SELF:
+            target = msg.get("text", "") or ""
+    except Exception:
+        target = ""
+    residue = bool(re.search(r"\|\|\||｜｜", target))  # 投稿に区切り残骸が現存
+    if not (residue or _SYMPTOM_RE.search(instruction or "")):
+        return None
+    instr = re.sub(rf"{re.escape(MENTION)}|<@U[A-Z0-9]+>", "", instruction or "").strip()
+    excerpt = (target or instr).strip()[:300]
+    return {"type": "issue", "issue_kind": "バグ", "rule_kind": "",
+            "要約": (instr[:60] or "Chiaki AI 出力の不具合"),
+            "詳細": f"Chiaki AI の出力に不具合（戸田指摘: {instr[:120]}）。該当投稿の現状（証拠）:\n{excerpt}",
+            "誤例": "", "正例": "", "確信度": 0.85}
+
+
 def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
     cs = _classify_intake(m["text"], _thread_context(ch, root, m["ts"]))
     if not cs:
@@ -368,6 +412,9 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
         return _await(items, m, ch, root, bills)
     typ = cs[0].get("type")  # bills が無い＝単発の edit/question/unclear/none
     if typ == "edit":
+        sym = _bug_symptom(m["text"], ch, root, m["text"])  # バグ症状なら証拠付き issue 化（編集で消さない）
+        if sym:
+            return _await(items, m, ch, root, [sym])
         st = _maybe_edit_root(ch, root, m["text"], m["text"])  # 生指示＝改行/空白の語を保つ
         _reply(ch, root, _EDIT_MSG[st])
         return 1
@@ -447,19 +494,22 @@ def main():
             continue
         seen.add(key)
         uniq.append(c)
-    maxts, acted = {}, 0
+    # uniq は ts 昇順。失敗が出たチャンネルはそれ以降カーソルを進めない＝失敗メッセージを取りこぼさず次回再処理する。
+    maxts, failed, acted = {}, set(), 0
     for m, root, ch, _hint in uniq:
-        maxts[ch] = max(maxts.get(ch, float(cur.get(ch, 0.0))), m["ts_float"])
         it = _find_awaiting(items, ch, root, m["ts"])
         try:
             acted += _handle_confirm(it, m, ch, root) if it else _handle_propose(m, ch, root, items)
+            if ch not in failed:
+                maxts[ch] = m["ts_float"]  # 連続成功プレフィックスの高水位だけ前進
         except Exception as e:
+            failed.add(ch)
             print(f"[intake] error ch={ch} ts={m['ts']}: {e}")
     runtime.save_json("chiaki_intake.json", intake)
     for ch, mx in maxts.items():
-        cur[ch] = mx
+        cur[ch] = max(float(cur.get(ch, 0.0)), mx)
     runtime.save_json("tuning_cursor.json", cur)
-    print(f"[intake] acted={acted}")
+    print(f"[intake] acted={acted} failed_ch={len(failed)}")
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ cron: 0 9 * * 1-5 / 0 10-17 * * 1-5 / 0 18 * * 1-5。
 """
 import datetime as dt
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -110,16 +111,12 @@ def _compose(mode: str, date: str, since: float):
     body = llm.haiku(prompt, max_tokens=300)
     if not body:
         return None
-    body = body.strip()
-    # 必ず 報告/詳細/ラポート の3行へ。Haiku は |||・|・改行 のどれで区切るか揺れるので全部試す
-    for sep in ("|||", "｜", "|"):
-        parts = [p.strip() for p in body.split(sep) if p.strip()]
-        if len(parts) == 3:
-            return runtime.ensure_punct(observe.enforce_regulations("\n".join(parts)))
-    body = body.rstrip("|｜　 \t\n")  # 末尾の区切り残骸（|||等）を除去
-    lines = [ln.strip() for ln in body.splitlines()
-             if ln.strip() and set(ln.strip()) - set("|｜")]  # 区切りだけの行も除く
-    return runtime.ensure_punct(observe.enforce_regulations("\n".join(lines) if len(lines) == 3 else body))
+    # 区切り(|||/||/|/｜・前後スペース・改行)を全て改行に正規化＝3分割の成否に依存せず、生パイプを絶対に投稿しない。
+    norm = re.sub(r"[ \t　]*[|｜]+[ \t　]*", "\n", body.strip())
+    parts = [ln.strip() for ln in norm.split("\n") if ln.strip()]
+    if not parts:
+        return None
+    return runtime.ensure_punct(observe.enforce_regulations("\n".join(parts)))
 
 
 def main():
