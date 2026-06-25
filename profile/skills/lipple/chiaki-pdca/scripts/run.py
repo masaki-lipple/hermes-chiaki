@@ -116,6 +116,8 @@ def _compose(mode: str, date: str, since: float):
     parts = [ln.strip() for ln in norm.split("\n") if ln.strip()]
     if not parts:
         return None
+    if len(parts) > 3:  # 3行ルール: 余剰は詳細(2行目)へ畳む（報告=先頭・ラポート=末尾は保持）
+        parts = [parts[0], "".join(parts[1:-1]), parts[-1]]
     return runtime.ensure_punct(observe.enforce_regulations("\n".join(parts)))
 
 
@@ -134,7 +136,9 @@ def main():
     if not body:
         print("[chiaki-pdca] compose failed")
         return
-    source.post_message(runtime.CH_CHIAKI_PDCA, f"<!channel>\n{body}")  # top-level＋@channel
+    # 始業＝多段テンプレは <!channel> を別行に。毎時/終業＝3行ルールは @channel を1行目に同居させ投稿全体を3行に保つ。
+    text = f"<!channel>\n{body}" if mode == "morning" else f"<!channel> {body}"
+    source.post_message(runtime.CH_CHIAKI_PDCA, text)  # top-level＋@channel
     now_ts = runtime.now_ts()
     day[slot], day["last_post_ts"] = now_ts, now_ts
     runtime.save_json("chiaki_pdca_state.json", st)

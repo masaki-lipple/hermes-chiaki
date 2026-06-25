@@ -77,7 +77,7 @@ def _classify_intake(text: str, context: str = "") -> list:
         "- rule: 言葉のルールを“今後のルール”として覚えるべき指摘。rule_kind="
         "スタイル(声/トーン/温度・例『もっとラフに』『！多すぎ』)|用語(固有名詞や語の統一)|レギュレーション(表記/約物/語尾)。\n"
         "- edit: いま出ている“この投稿そのもの”を今すぐ直す依頼（『この一文消して』『今回直して』『ここ柔らかく』）。\n"
-        "  ※ただし Chiaki AI 自身の出力の不具合（|||等の区切り混入・改行されない・文字化け・重複など“症状の指摘”）は edit でなく issue(issue_kind=バグ)。edit は内容は正しく言い回しだけ直す依頼に限る。\n"
+        "  ※ただし Chiaki AI 自身の出力の不具合（|||等の区切り混入・改行されない・行数が崩れる(3行ルールが4行になる等)・文字化け・重複など“症状の指摘”）は edit でなく issue(issue_kind=バグ)。edit は内容は正しく言い回しだけ直す依頼に限る。\n"
         "- question: 質問・依頼（『まとめて』『教えて』『何件？』）。\n"
         "- unclear: 指摘だが種別が曖昧（『なんか違う』等）。確信が低い時もここ。\n"
         "- none: 指摘・依頼・質問のいずれでもない（雑談・お礼・相づち・FYI・了承だけ 等）。\n"
@@ -374,7 +374,7 @@ def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
     return 1
 
 
-_SYMPTOM_RE = re.compile(r"\|\|\||｜｜｜?|文字化け|区切り(?:記号|文字)|崩れて|残骸|重複して")
+_SYMPTOM_RE = re.compile(r"\|\|\||｜｜｜?|文字化け|区切り(?:記号|文字)|崩れて|残骸|重複して|行になっちゃ")
 
 
 def _bug_symptom(instruction: str, ch: str, root: str, raw: str):
