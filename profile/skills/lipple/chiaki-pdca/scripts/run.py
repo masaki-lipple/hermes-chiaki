@@ -145,9 +145,8 @@ def main():
     if not body:
         print("[chiaki-pdca] compose failed")
         return
-    # 始業＝多段テンプレは <!channel> を別行に。毎時/終業＝3行ルールは @channel を1行目に同居させ投稿全体を3行に保つ。
-    text = f"<!channel>\n{body}" if mode == "morning" else f"<!channel> {body}"
-    source.post_message(runtime.CH_CHIAKI_PDCA, text)  # top-level＋@channel
+    # <!channel> は必ず別行（メンションの下で改行）。本文は _compose が必ず3行に畳むので @channel＋3行になる。
+    source.post_message(runtime.CH_CHIAKI_PDCA, f"<!channel>\n{body}")  # top-level＋@channel
     now_ts = runtime.now_ts()
     day[slot], day["last_post_ts"] = now_ts, now_ts
     runtime.save_json("chiaki_pdca_state.json", st)
