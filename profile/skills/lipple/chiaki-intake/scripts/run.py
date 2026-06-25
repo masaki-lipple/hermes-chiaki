@@ -50,48 +50,61 @@ def _permalink(ch: str, ts: str, parent: str) -> str:
 
 
 # ── 分類（propose ターン） ─────────────────────────────
-def _classify_intake(text: str, context: str = ""):
-    """戸田さんの指摘を {type, issue_kind, rule_kind, 要約, 詳細, 誤例, 正例, 確信度} に分類。失敗時 None。"""
+def _norm_item(c: dict) -> dict:
+    if c.get("type") == "issue" and c.get("issue_kind") not in ISSUE_KINDS:
+        c["issue_kind"] = "その他"
+    if c.get("type") == "rule" and c.get("rule_kind") not in RULE_KINDS:
+        c["rule_kind"] = "スタイル"
+    try:  # 低確信は unclear に倒す（誤起票より確認）
+        if c.get("type") in ("issue", "rule") and float(c.get("確信度", 1)) < 0.45:
+            c["type"] = "unclear"
+    except Exception:
+        pass
+    return c
+
+
+def _classify_intake(text: str, context: str = "") -> list:
+    """戸田さんの指摘を分類して list で返す（各 {type,issue_kind,rule_kind,要約,詳細,誤例,正例,確信度}）。
+    本当に独立した複数の指摘は要素を分ける（分割起票）。失敗時 []。"""
     try:
         from lib import llm
     except Exception:
-        return None
+        return []
     body = re.sub(rf"{re.escape(MENTION)}|<@U[A-Z0-9]+>", "", text or "").strip()
     prompt = (
-        "次は戸田さんが Chiaki AI（社内タスク管理AI）に送った指摘/依頼です。種別を1つに判定:\n"
+        "次は戸田さんが Chiaki AI（社内タスク管理AI）に送った指摘/依頼です。種別を判定:\n"
         "- issue: Chiaki AI の不具合・要望（動作の問題/機能追加/変更/バグ）。issue_kind=バグ|変更|新機能|その他。\n"
         "- rule: 言葉のルールを“今後のルール”として覚えるべき指摘。rule_kind="
         "スタイル(声/トーン/温度・例『もっとラフに』『！多すぎ』)|用語(固有名詞や語の統一)|レギュレーション(表記/約物/語尾)。\n"
         "- edit: いま出ている“この投稿そのもの”を今すぐ直す依頼（『この一文消して』『今回直して』『ここ柔らかく』）。\n"
         "- question: 質問・依頼（『まとめて』『教えて』『何件？』）。\n"
         "- unclear: 指摘だが種別が曖昧（『なんか違う』等）。確信が低い時もここ。\n"
-        "- none: 指摘・依頼・質問のいずれでもない（雑談・お礼・相づち・FYI・了承だけ 等）。何もしない。\n"
+        "- none: 指摘・依頼・質問のいずれでもない（雑談・お礼・相づち・FYI・了承だけ 等）。\n"
+        "**本当に独立した別々の指摘だけ要素を分ける**（例『スペース』と『全角』は別件＝2要素／"
+        "『！多すぎ・もっとラフに』は同じトーンの話なので1要素）。edit/question/unclear/none は必ず1要素。\n"
         + (f"直前のやりとり(古い順):\n{context}\n" if context else "")
         + f"メッセージ: {body}\n"
-        "要約(title用・一言[:200])・詳細(背景や直し方)・(rule時のみ)誤例/正例・確信度(0〜1) も付ける。"
-        "指摘・依頼・質問でなければ none。種別が曖昧な“指摘”だけ unclear。\n"
-        'JSON のみ: {"type":"issue|rule|edit|question|unclear|none","issue_kind":"","rule_kind":"",'
-        '"要約":"","詳細":"","誤例":"","正例":"","確信度":0.0}'
+        "各要素に 要約(title用・一言[:200])・詳細(背景や直し方)・(rule時のみ)誤例/正例・確信度(0〜1) を付ける。\n"
+        'JSON 配列のみ: [{"type":"issue|rule|edit|question|unclear|none","issue_kind":"","rule_kind":"",'
+        '"要約":"","詳細":"","誤例":"","正例":"","確信度":0.0}]'
     )
-    out = llm.haiku(prompt, max_tokens=400) or ""
-    m = re.search(r"\{.*\}", out, re.S)
-    if not m:
-        return None
-    try:
-        c = json.loads(m.group(0))
-    except Exception:
-        return None
-    if c.get("type") == "issue" and c.get("issue_kind") not in ISSUE_KINDS:
-        c["issue_kind"] = "その他"
-    if c.get("type") == "rule" and c.get("rule_kind") not in RULE_KINDS:
-        c["rule_kind"] = "スタイル"
-    # 低確信は unclear に倒す（誤起票より確認）
-    try:
-        if c.get("type") in ("issue", "rule") and float(c.get("確信度", 1)) < 0.45:
-            c["type"] = "unclear"
-    except Exception:
-        pass
-    return c
+    out = llm.haiku(prompt, max_tokens=700) or ""
+    arr = None
+    mm = re.search(r"\[.*\]", out, re.S)
+    if mm:
+        try:
+            arr = json.loads(mm.group(0))
+        except Exception:
+            arr = None
+    if arr is None:  # 配列で来なければ単体 {...} を1要素に
+        m1 = re.search(r"\{.*\}", out, re.S)
+        try:
+            arr = [json.loads(m1.group(0))] if m1 else []
+        except Exception:
+            return []
+    if not isinstance(arr, list):
+        arr = [arr]
+    return [_norm_item(c) for c in arr if isinstance(c, dict) and c.get("type")]
 
 
 def _verdict(text: str) -> str:
@@ -107,10 +120,21 @@ def _verdict(text: str) -> str:
     return "reclassify"  # 文面修正・振り分け変更・補足はすべて再分類して再提示
 
 
-def _propose_text(p: dict) -> str:
-    """案提示の文面（柔らかく・詰めない＝スタイル第1部E）。"""
-    t = p.get("type")
+def _one_line(p: dict) -> str:
     s = (p.get("要約") or "").strip()
+    if p.get("type") == "issue":
+        return f"Issue「{s}／{p.get('issue_kind') or 'その他'}」"
+    return f"{p.get('rule_kind') or 'スタイル'}「{s}」"
+
+
+def _propose_text(proposals: list) -> str:
+    """案提示の文面（柔らかく・詰めない）。複数の issue/rule は番号付きで一括確認。"""
+    bills = [p for p in proposals if p.get("type") in ("issue", "rule")]
+    if len(bills) >= 2:
+        lines = [f"{i}) {_one_line(p)}" for i, p in enumerate(bills, 1)]
+        return f"以下の{len(bills)}件を登録してもいいですか？\n" + "\n".join(lines)
+    p = bills[0] if bills else proposals[0]
+    t, s = p.get("type"), (p.get("要約") or "").strip()
     if t == "issue":
         return f"Issueに「{s}／種別={p.get('issue_kind') or 'その他'}」で登録してもいいですか？"
     if t == "rule":
@@ -326,11 +350,23 @@ def _expire_stale(items: dict) -> None:
             it["status"] = "expired"
 
 
+def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
+    items[m["ts"]] = {"status": "awaiting_confirm", "channel": ch, "thread_root": root,
+                      "mention_ts": m["ts"], "mention_text": m["text"],
+                      "permalink": _permalink(ch, m["ts"], root), "proposals": proposals,
+                      "proposed_at": runtime.now_ts(), "last_seen_ts": m["ts"], "propose_count": 1}
+    _reply(ch, root, _propose_text(proposals))
+    return 1
+
+
 def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
-    c = _classify_intake(m["text"], _thread_context(ch, root, m["ts"]))
-    if not c:
+    cs = _classify_intake(m["text"], _thread_context(ch, root, m["ts"]))
+    if not cs:
         return 0
-    typ = c.get("type")
+    bills = [c for c in cs if c.get("type") in ("issue", "rule")]
+    if bills:  # 1件でも複数でも awaiting（複数は分割起票）
+        return _await(items, m, ch, root, bills)
+    typ = cs[0].get("type")  # bills が無い＝単発の edit/question/unclear/none
     if typ == "edit":
         st = _maybe_edit_root(ch, root, m["text"], m["text"])  # 生指示＝改行/空白の語を保つ
         _reply(ch, root, _EDIT_MSG[st])
@@ -341,35 +377,34 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
             _reply(ch, root, ans)
             return 1
         return 0
-    if typ in ("issue", "rule", "unclear"):
-        items[m["ts"]] = {"status": "awaiting_confirm", "channel": ch, "thread_root": root,
-                          "mention_ts": m["ts"], "mention_text": m["text"],
-                          "permalink": _permalink(ch, m["ts"], root), "proposal": c,
-                          "proposed_at": runtime.now_ts(), "last_seen_ts": m["ts"], "propose_count": 1}
-        _reply(ch, root, _propose_text(c))
-        return 1
-    return 0
+    if typ == "unclear":
+        return _await(items, m, ch, root, [cs[0]])
+    return 0  # none
 
 
 def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
     it["last_seen_ts"] = m["ts"]
     v = _verdict(m["text"])
-    p = it.get("proposal", {})
+    proposals = it.get("proposals") or ([it["proposal"]] if it.get("proposal") else [])
+    bills = [p for p in proposals if p.get("type") in ("issue", "rule")]
     if v == "reject":
         it["status"] = "cancelled"
         _reply(ch, root, "わかりました、今回は見送りますね。")
         return 1
-    # unclear はまだ起票候補が定まっていない → 返信を手掛かりに再分類（go でも reclassify）
-    if v == "go" and p.get("type") in ("issue", "rule"):
-        url = _file_issue(p, it["permalink"], ch) if p["type"] == "issue" else _file_rule(p, it["permalink"])
-        it["status"], it["page_url"] = "filed", url
-        # rule は登録するだけでなく、指摘元の投稿も決定論で直す（戸田: 登録＋編集して修正）
+    # unclear（bills 無し）はまだ候補が定まっていない → go でも再分類
+    if v == "go" and bills:
+        filed = [(p, _file_issue(p, it["permalink"], ch) if p["type"] == "issue"
+                  else _file_rule(p, it["permalink"])) for p in bills]
+        urls = [u for _, u in filed if u]
+        it["status"], it["page_urls"] = "filed", urls
+        # rule があれば指摘元の投稿も決定論で1回直す（戸田: 登録＋編集して修正）
         extra = ""
-        if p["type"] == "rule" and url:
+        if any(p["type"] == "rule" for p in bills) and urls:
             if _maybe_edit_root(ch, root, "", it.get("mention_text", "")) == "edited":
                 extra = "\n指摘のあった投稿も直しました。"
-        if url:
-            _reply(ch, root, "登録しました！" + extra, url=url)
+        if urls:
+            head = "登録しました！" if len(filed) == 1 else f"{len(filed)}件 登録しました！"
+            _reply(ch, root, head + extra + "\n" + "\n".join(urls))
         elif not notion._token():
             _reply(ch, root, "登録しました！（ローカル確認のため実際の保存はしていません）")
         else:
@@ -379,14 +414,15 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
     if it.get("propose_count", 1) >= _PROPOSE_CAP:
         _reply(ch, root, "うまく汲み取れていないかもしれません。「これでOK」か「却下」で教えてください。")
         return 1
-    c2 = _classify_intake(f"{it.get('mention_text', '')} / 戸田さんの指示: {m['text']}",
-                          _thread_context(ch, root, m["ts"]))
-    if c2 and c2.get("type") in ("issue", "rule", "unclear"):
-        it["proposal"] = c2
+    cs2 = _classify_intake(f"{it.get('mention_text', '')} / 戸田さんの指示: {m['text']}",
+                           _thread_context(ch, root, m["ts"]))
+    bills2 = [c for c in cs2 if c.get("type") in ("issue", "rule")]
+    if bills2 or (cs2 and cs2[0].get("type") == "unclear"):
+        it["proposals"] = bills2 or [cs2[0]]
         it["propose_count"] = it.get("propose_count", 1) + 1
-        _reply(ch, root, _propose_text(c2))
+        _reply(ch, root, _propose_text(it["proposals"]))
         return 1
-    if c2 and c2.get("type") == "edit":
+    if cs2 and cs2[0].get("type") == "edit":
         st = _maybe_edit_root(ch, root, m["text"], m["text"])
         it["status"] = "cancelled"
         _reply(ch, root, _EDIT_MSG[st])
