@@ -21,6 +21,7 @@ from pathlib import Path
 YOUGO_DB = "876b0c67-4a6f-4d09-ba83-6c9ca822c7a3"   # 用語辞書_DB（固有名詞・誤変換）
 REG_DB = "2a1b88bf-9326-4ffc-aaf5-e6608871b5e0"     # レギュレーション_DB（誤例→正例）
 STYLE_PAGE = "389980d4-f840-8133-8aa2-c66b857aa8ff"  # Style_Hermes Agent_総論（prose）
+RULE_REGISTRY_DB = "e10777d5a7a04ac294273b9e077e1a38"  # Rule Registry（intake）。『承認』エントリを正本に同期する
 ACRONYMS = ["SNS", "EC", "SEO", "AI", "CV", "CVR", "KPI", "URL", "HP", "DM", "FAQ", "HR"]
 # 同じ表記でも文脈で正しい用法があり blind 置換すると壊れる語＝Opus が安全と言っても強制しない安全網
 RISKY_DENYLIST = {"等", "様", "時", "良い", "よい", "頂く", "いただく", "生かす", "活かす",
@@ -315,6 +316,30 @@ def resolve_decidable(active_rows: list, token: str) -> dict:
     return {pid: bool(cache.get(pid, {}).get("decidable")) for pid in active_ids}
 
 
+def _registry_approved(token: str) -> list:
+    """Rule Registry の『承認』エントリ（＝同期対象）。失敗時 []。"""
+    try:
+        rows = _query(RULE_REGISTRY_DB, token)
+    except Exception as e:
+        print(f"[sync] rule-registry query failed: {e}")
+        return []
+    return [pg for pg in rows if _sel(pg["properties"], "ステータス") == "承認"]
+
+
+def _registry_to_regrow(pg: dict) -> dict:
+    """承認エントリ(用語/レギュレーション)を レギュレーション行 形式へ変換し、既存の安全判定に通す。
+    構造的ルール(誤例が綺麗な1:1でない)は build_regulations が notes 送り＝壊れる置換は作らない。"""
+    p = pg["properties"]
+
+    def rt(s):
+        return {"rich_text": [{"plain_text": s}]}
+    return {"id": pg["id"], "url": pg.get("url", ""), "properties": {
+        "ルール": rt(_txt(p, "要約")), "ルール内容": rt(_txt(p, "詳細")),
+        "誤例": rt(_txt(p, "誤例")), "正例": rt(_txt(p, "正例")),
+        "種別": {"select": {"name": _sel(p, "種別") or "Lipple"}},
+        "適用シーン": {"select": None}, "カテゴリ": {"select": None}}}
+
+
 def main():
     token = _token()
     yougo_rows = _query(YOUGO_DB, token)
@@ -325,21 +350,34 @@ def main():
     rules = build(yougo_rows=yougo_rows, reg_rows=reg_rows)
     _atomic_write(state / "notation_rules.json", json.dumps(rules, ensure_ascii=False, indent=2))
 
-    # 2) regulations.json（有効のみ・Haiku が強制可否を分類＋denylist で二重ガード）
-    active = [r for r in reg_rows if _sel(r["properties"], "ステータス") == "有効"]
+    # 1.5) 承認→同期: Rule Registry の承認エントリを正本に合流（レギュ→regulations 即時／スタイル→prose）
+    approved = _registry_approved(token)
+    reg_extra = [_registry_to_regrow(pg) for pg in approved
+                 if _sel(pg["properties"], "種別") in ("用語", "レギュレーション")]
+    style_extra = []
+    for pg in approved:
+        if _sel(pg["properties"], "種別") == "スタイル":
+            t, d = _txt(pg["properties"], "要約"), _txt(pg["properties"], "詳細")
+            style_extra.append(f"- {t}" + (f"：{d}" if d else ""))
+
+    # 2) regulations.json（正本『有効』＋承認エントリ・Haiku が強制可否を分類＋denylist で二重ガード）
+    active = [r for r in reg_rows if _sel(r["properties"], "ステータス") == "有効"] + reg_extra
     decidable = resolve_decidable(active, token)  # 永続キャッシュ＋差分のみ再判定（揺れ防止）
     reg = build_regulations(yougo_rows, active, decidable)
     _atomic_write(state / "regulations.json", json.dumps(reg, ensure_ascii=False, indent=2))
 
-    # 3) style_hermes.md（取得できた時だけ上書き）
+    # 3) style_hermes.md（Style page ＋ 承認スタイル指針。取得/承認のどちらかがあれば上書き）
     style_md = fetch_style_markdown(token, STYLE_PAGE)
+    if style_extra:
+        style_md = (style_md + "\n\n## 承認済みスタイル指針（Rule Registry）\n" + "\n".join(style_extra)).strip()
     if style_md:
         _atomic_write(state / "style_hermes.md", style_md)
 
     print(f"[sync] notation terms={len(rules['terms'])} style_rules={len(rules['style_rules'])} | "
           f"regulations term={len(reg['term_replacements'])} regex={len(reg['regex_rules'])} "
-          f"notes={len(reg['regulation_notes'])} (active={len(active)} decidable={sum(1 for v in decidable.values() if v)}) | "
-          f"style_md={'yes' if style_md else 'no'} -> {state}")
+          f"notes={len(reg['regulation_notes'])} (active={len(active)} +registry={len(reg_extra)} "
+          f"decidable={sum(1 for v in decidable.values() if v)}) | "
+          f"style_md={'yes' if style_md else 'no'} +styleReg={len(style_extra)} -> {state}")
 
 
 if __name__ == "__main__":
