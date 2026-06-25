@@ -82,8 +82,14 @@ def main():
                 max_seen = max(max_seen, r["ts_float"])
 
     t["last_processed_ts"] = max(max_seen, max(m["ts_float"] for m in today_msgs))
-    timers[ch] = t
-    runtime.save_json("channel_timers.json", timers)
+    # 自分のキーだけ最新へ書き戻す＝並行 silence-reminder(*/5)の already_reminded_after_ts を巻き戻さない
+    latest = runtime.load_json("channel_timers.json", {})
+    merged = latest.get(ch, {})
+    for k in ("last_post_ts", "last_post_dt", "end_of_work_date", "last_processed_ts"):
+        if k in t:
+            merged[k] = t[k]
+    latest[ch] = merged
+    runtime.save_json("channel_timers.json", latest)
 
     print(f"[obs-batch] {today}: msgs={len(today_msgs)} 予定={'有' if sched else '無'} "
           f"実測={len(ev['actuals'])} 未突合={len(ev['unmatched'])} 表記候補={n_notation} eow={eow}")

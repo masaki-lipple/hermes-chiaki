@@ -70,9 +70,12 @@ def main():
     body = _compose(dec["gap_min"], now)
     res = source.post_thread_reply(ch, dec["target_ts"], f"<@{last['user_id']}>\n{body}")
     nudge_ts = res.get("ts") if isinstance(res, dict) else None
-    t["already_reminded_after_ts"] = last["ts_float"]
-    timers[ch] = t
-    runtime.save_json("channel_timers.json", timers)
+    # 自分のキー(already_reminded_after_ts)だけ最新へ書き戻す＝並行 obs-batch(*/10)のキーを巻き戻さない(二重nudge防止)
+    latest = runtime.load_json("channel_timers.json", {})
+    merged = latest.get(ch, {})
+    merged["already_reminded_after_ts"] = last["ts_float"]
+    latest[ch] = merged
+    runtime.save_json("channel_timers.json", latest)
     # 控えを #8902 へ（セルフメンション＝戸田さんはping無し・対象=チャンネルURL・末尾に促した投稿リンク）
     ch_url = f"https://{TEAM}.slack.com/archives/{ch}"
     notice = (f"<@{runtime.CHIAKI_SELF}>\n報告：リマインド控え\n対象：{ch_url}\n\n"
