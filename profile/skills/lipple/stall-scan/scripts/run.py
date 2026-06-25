@@ -16,7 +16,8 @@ def main():
     now = runtime.now_ts()
     bots = {runtime.GCP_TASK_BOT}
 
-    msgs = source.read_recent(ch, limit=200)
+    # 30日(stall_scan の open_window)分をページングで全取得＝#200 超の古いタスク根を取りこぼさない
+    msgs = source.read_recent(ch, oldest_ts=now - 30 * 86400, limit=200, paginate=True)
     # 各タスク根の human_replies を埋める（live はスレッド取得して bot 除外、fixtures は None→thread_replies代用）
     for m in msgs:
         if observe.parse_biz_task(m["text"]):

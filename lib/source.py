@@ -123,7 +123,10 @@ def _rich_blocks(text: str):
         return None
 
 
-def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 200) -> list[dict]:
+def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 200,
+                paginate: bool = False, max_pages: int = 10) -> list[dict]:
+    """既定は1ページ(最新 limit 件)。paginate=True で next_cursor を辿り窓内を全取得（stall-scan 用＝
+    #200 超の古いタスク根を見落とさない）。max_pages で暴走/レート上限を抑え、途中失敗は print して打ち切り。"""
     if FIXTURES:
         fn = _CH_FIXTURE.get(channel_id)
         if not fn:
@@ -131,13 +134,31 @@ def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 20
         msgs = json.loads((Path(FIXTURES) / fn).read_text(encoding="utf-8"))
         if oldest_ts is not None:
             msgs = [m for m in msgs if m["ts_float"] > oldest_ts]
-        return sorted(msgs, key=lambda x: x["ts_float"])[-limit:]
+        msgs = sorted(msgs, key=lambda x: x["ts_float"])
+        return msgs if paginate else msgs[-limit:]  # paginate 時は窓内全件（[-limit:] で切らない）
     params = {"channel": channel_id, "limit": min(limit, 200)}
     if oldest_ts is not None:
         params["oldest"] = f"{oldest_ts:.6f}"
-    res = _api_get("conversations.history", params)
-    msgs = [_norm_api(m) for m in res.get("messages", []) if m.get("subtype") is None or m.get("text")]
-    return sorted(msgs, key=lambda x: x["ts_float"])
+    if not paginate:
+        res = _api_get("conversations.history", params)
+        msgs = [_norm_api(m) for m in res.get("messages", []) if m.get("subtype") is None or m.get("text")]
+        return sorted(msgs, key=lambda x: x["ts_float"])
+    out, cursor, pages = [], None, 0
+    while pages < max_pages:
+        p = dict(params)
+        if cursor:
+            p["cursor"] = cursor
+        try:
+            res = _api_get("conversations.history", p)
+        except Exception as e:
+            print(f"[source] read_recent paginate stopped at page {pages}: {e}")
+            break
+        out += [_norm_api(m) for m in res.get("messages", []) if m.get("subtype") is None or m.get("text")]
+        cursor = (res.get("response_metadata") or {}).get("next_cursor")
+        pages += 1
+        if not res.get("has_more") or not cursor:
+            break
+    return sorted(out, key=lambda x: x["ts_float"])
 
 
 def read_thread(channel_id: str, thread_ts: str) -> list[dict]:
