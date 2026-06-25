@@ -108,7 +108,11 @@ def _compose(mode: str, date: str, since: float):
     tn = runtime.load_tuning("pdca")  # 戸田さんの口頭調整を反映
     if tn:
         prompt += " 戸田さんの指示（必ず守る）: " + "; ".join(tn) + "。"
-    body = llm.haiku(prompt, max_tokens=300)
+    try:
+        body = llm.haiku(prompt, max_tokens=300)
+    except Exception as e:
+        print(f"[chiaki-pdca] haiku failed: {e}")
+        return None
     if not body:
         return None
     # 区切り(|||/||/|/｜・前後スペース・改行)を全て改行に正規化＝3分割の成否に依存せず、生パイプを絶対に投稿しない。
@@ -118,7 +122,12 @@ def _compose(mode: str, date: str, since: float):
         return None
     if len(parts) > 3:  # 3行ルール: 余剰は詳細(2行目)へ畳む（報告=先頭・ラポート=末尾は保持）
         parts = [parts[0], "".join(parts[1:-1]), parts[-1]]
-    return runtime.ensure_punct(observe.enforce_regulations("\n".join(parts)))
+    out = runtime.ensure_punct(observe.enforce_regulations("\n".join(parts)))
+    # enforce の URL前空行等で行が増えても3行に畳み直す（毎時/終業の3行を最終保証）
+    lines = [ln.strip() for ln in (out or "").split("\n") if ln.strip()]
+    if len(lines) > 3:
+        lines = [lines[0], "".join(lines[1:-1]), lines[-1]]
+    return "\n".join(lines) if lines else None
 
 
 def main():

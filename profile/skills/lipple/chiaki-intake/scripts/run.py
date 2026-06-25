@@ -28,8 +28,9 @@ ISSUE_KINDS = {"バグ", "変更", "新機能", "その他"}
 RULE_KINDS = {"用語", "レギュレーション", "スタイル"}
 INTAKE_TIMEOUT_SEC = 24 * 3600  # 確認が来ない案は24hで失効
 _PROPOSE_CAP = 4               # 再提示の上限（堂々巡り防止）
-_GO = {"go", "ok", "okです", "おk", "おけ", "ｏｋ", "了解", "りょうかい", "承認", "いいね", "いいよ",
-       "はい", "おねがいします", "お願いします", "それで", "それでお願いします", "登録して", "ok!"}
+_GO = {"go", "ok", "okです", "おk", "おけ", "ｏｋ", "了解", "了解です", "りょうかい", "承認", "承知",
+       "承知しました", "いいね", "いいよ", "はい", "おねがいします", "お願いします", "それで",
+       "それでお願いします", "登録して", "ok!"}
 _REJECT = ("却下", "やめ", "なしで", "見送", "いらない", "ボツ", "流して", "今回はいい", "結構です", "やめて")
 
 
@@ -109,21 +110,25 @@ def _classify_intake(text: str, context: str = "") -> list:
 
 
 _APPEND_RE = re.compile(r"記載|追記|加えて|付け加え|盛り込|書いとい|書いてお|入れとい|入れてお|も書いて|も入れて|も記")
+# 承認に同梱された「訂正・振り分け変更・修正指示」の手掛かり（これらがあれば go でなく reclassify）
+_CORRECT_RE = re.compile(r"でも|ただ|じゃなくて|ではなく|の方で|に直して|に変えて|にして|変えて|違っ|訂正|"
+                         r"種別|分類|振り分け|変更|要約|短く|長く|修正|スタイル|用語|レギュレーション|Rule|"
+                         r"issue|バグ|新機能|足して|減らして|消して|追加")
 
 
 def _verdict(text: str) -> str:
-    """確認ターンの戸田さん返信 → go / reject / reclassify。
-    @メンション（app_mention 返信で必ず付く）を除去してから判定する（除かないと『はい』が go に一致しない）。
-    『はい』＋追記指示（「…」引用や“〜も記載して”）は go でなく reclassify＝追記を取り込んで再提示する。"""
+    """確認ターンの戸田さん返信 → go / reject / reclassify。@メンションを除去してから判定。
+    go 語が在っても、go 語以外に追記(「」引用/〜も記載)や訂正・振り分け変更の手掛かりがあれば
+    go でなく reclassify＝取りこぼさず再分類して再提示する（社交辞令だけなら go を維持）。"""
     t = re.sub(rf"{re.escape(MENTION)}|<@U[A-Z0-9]+>", "", text or "").strip()
     core = t.strip(" 　。、！!.?？\n\r\t")
     if any(w in t for w in _REJECT):
         return "reject"
     tokens = [x for x in re.split(r"[、。！!\?？\s　]+", core) if x]
     if core.lower() in _GO or any(tok.lower() in _GO for tok in tokens):
-        residual = "".join(tok for tok in tokens if tok.lower() not in _GO)
-        if "「" in t or _APPEND_RE.search(residual):
-            return "reclassify"  # 承認＋追記指示は取りこぼさず再分類して再提示
+        res = "".join(tok for tok in tokens if tok.lower() not in _GO)
+        if "「" in t or _APPEND_RE.search(res) or _CORRECT_RE.search(res):
+            return "reclassify"  # 承認＋追記/訂正 → 取りこぼさず再分類
         return "go"
     return "reclassify"  # 文面修正・振り分け変更・補足はすべて再分類して再提示
 
@@ -303,8 +308,7 @@ _EDIT_MSG = {
     "norevise": ("うまく汲み取れませんでした。Slack で直せる表記の話なら、どこをどう直すか具体的に教えてください。"
                  "ロジックや機能などコード対応が要る内容なら、AIコーディングエージェントをお使いください。"),
     "notfound": "該当の投稿が特定できませんでした。どの投稿か教えてもらえますか？",
-    "notself": ("そのリンクは Chiaki AI の投稿ではないようです。直すのは Chiaki AI のどの投稿でしょうか。"
-                "直前に起票した内容への追記なら、追記したい文をそのまま教えてください。"),
+    "notself": "そのリンクは Chiaki AI の投稿ではないようです。直すのは Chiaki AI のどの投稿でしょうか。",
 }
 
 
@@ -374,7 +378,7 @@ def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
     return 1
 
 
-_SYMPTOM_RE = re.compile(r"\|\|\||｜｜｜?|文字化け|区切り(?:記号|文字)|崩れて|残骸|重複して|行になっちゃ")
+_SYMPTOM_RE = re.compile(r"[|｜]{2,}|文字化け|区切り(?:記号|文字)|崩れて|残骸|重複して|行になっちゃ|改行され(?:て)?(?:い|な)|行が増え")
 
 
 def _bug_symptom(instruction: str, ch: str, root: str, raw: str):
@@ -392,7 +396,7 @@ def _bug_symptom(instruction: str, ch: str, root: str, raw: str):
             target = msg.get("text", "") or ""
     except Exception:
         target = ""
-    residue = bool(re.search(r"\|\|\||｜｜", target))  # 投稿に区切り残骸が現存
+    residue = bool(re.search(r"[|｜]{2,}", target))  # 投稿に区切り残骸が現存
     if not (residue or _SYMPTOM_RE.search(instruction or "")):
         return None
     instr = re.sub(rf"{re.escape(MENTION)}|<@U[A-Z0-9]+>", "", instruction or "").strip()
@@ -403,7 +407,15 @@ def _bug_symptom(instruction: str, ch: str, root: str, raw: str):
             "誤例": "", "正例": "", "確信度": 0.85}
 
 
+def _mark_done(items: dict, m: dict, ch: str, root: str) -> int:
+    """item を作らない経路(edit/question)でも『処理済み』印を残す＝再処理時に二重投稿しない。"""
+    items[m["ts"]] = {"status": "handled", "channel": ch, "thread_root": root, "mention_ts": m["ts"]}
+    return 1
+
+
 def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
+    if m["ts"] in items:  # 既に提案/起票/処理済みの同一メンション＝再処理時に二重投稿しない（冪等）
+        return 0
     cs = _classify_intake(m["text"], _thread_context(ch, root, m["ts"]))
     if not cs:
         return 0
@@ -417,12 +429,12 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
             return _await(items, m, ch, root, [sym])
         st = _maybe_edit_root(ch, root, m["text"], m["text"])  # 生指示＝改行/空白の語を保つ
         _reply(ch, root, _EDIT_MSG[st])
-        return 1
+        return _mark_done(items, m, ch, root)
     if typ == "question":
         ans = _answer(m["text"], ch, root)
         if ans:
             _reply(ch, root, ans)
-            return 1
+            return _mark_done(items, m, ch, root)
         return 0
     if typ == "unclear":
         return _await(items, m, ch, root, [cs[0]])
@@ -440,18 +452,25 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
         return 1
     # unclear（bills 無し）はまだ候補が定まっていない → go でも再分類
     if v == "go" and bills:
-        filed = [(p, _file_issue(p, it["permalink"], ch) if p["type"] == "issue"
-                  else _file_rule(p, it["permalink"])) for p in bills]
-        urls = [u for _, u in filed if u]
-        it["status"], it["page_urls"] = "filed", urls
-        # rule があれば指摘元の投稿も決定論で1回直す（戸田: 登録＋編集して修正）
+        results = [(p, _file_issue(p, it["permalink"], ch) if p["type"] == "issue"
+                    else _file_rule(p, it["permalink"])) for p in bills]
+        ok = [(p, u) for p, u in results if u]
+        ng = [p for p, u in results if not u]
+        urls = [u for _, u in ok]
+        # rule があれば指摘元の投稿も決定論で1回だけ直す（再試行で二重編集しない）
         extra = ""
-        if any(p["type"] == "rule" for p in bills) and urls:
+        if urls and any(p["type"] == "rule" for p, _ in ok) and not it.get("root_edited"):
             if _maybe_edit_root(ch, root, "", it.get("mention_text", "")) == "edited":
-                extra = "\n指摘のあった投稿も直しました。"
-        if urls:
-            head = "登録しました！" if len(filed) == 1 else f"{len(filed)}件 登録しました！"
+                extra, it["root_edited"] = "\n指摘のあった投稿も直しました。", True
+        if urls and not ng:  # 全件成功
+            it["status"], it["page_urls"] = "filed", urls
+            head = "登録しました！" if len(urls) == 1 else f"{len(urls)}件 登録しました！"
             _reply(ch, root, head + extra + "\n" + "\n".join(urls))
+        elif urls and ng:  # 部分失敗＝失敗分だけ残し再試行可能に（成功分は除く＝重複起票しない）
+            it["proposals"], it["status"] = ng, "awaiting_confirm"
+            it["page_urls"], it["proposed_at"] = urls, runtime.now_ts()
+            _reply(ch, root, f"{len(bills)}件中{len(urls)}件 登録しました！" + extra + "\n" + "\n".join(urls)
+                   + f"\n残り{len(ng)}件は起票に失敗しました。DBの共有を確認のうえ、もう一度「はい」で再試行します。")
         elif not notion._token():
             _reply(ch, root, "登録しました！（ローカル確認のため実際の保存はしていません）")
         else:
@@ -474,7 +493,10 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
         it["status"] = "cancelled"
         _reply(ch, root, _EDIT_MSG[st])
         return 1
-    return 0
+    # どの分類にも落ちなかった（question/none/空）＝無返信を防ぐ。awaiting は維持して次の返信を待つ。
+    it["propose_count"] = it.get("propose_count", 1) + 1
+    _reply(ch, root, "うまく汲み取れませんでした。「これでOK」か「却下」、または直したい内容を具体的に教えてもらえますか？")
+    return 1
 
 
 def main():
