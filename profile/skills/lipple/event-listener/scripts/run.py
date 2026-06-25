@@ -76,18 +76,23 @@ def _is_intake_thread(ch: str, thread_ts: str) -> bool:
                and it.get("thread_root") == thread_ts for it in items.values())
 
 
+_DEDUP_LOCK = threading.Lock()
+
+
 def _dup(key: str) -> bool:
-    """Slack の再送・message/app_mention 重複を event_id で弾く（直近500保持）。actionable な時だけ呼ぶ。"""
+    """同一発話(ch:ts)の重複を弾く（直近500保持）。10並列ワーカーのため lock で read-modify-write を直列化。
+    第二の冪等性ガード（intake の items/(ch,ts)・cursor、apply の status）が本筋で、これは一次フィルタ。"""
     if not key:
         return False
-    st = runtime.load_json("processed_events.json", {"ids": []})
-    ids = st.get("ids", [])
-    if key in ids:
-        return True
-    ids.append(key)
-    st["ids"] = ids[-500:]
-    runtime.save_json("processed_events.json", st)
-    return False
+    with _DEDUP_LOCK:
+        st = runtime.load_json("processed_events.json", {"ids": []})
+        ids = st.get("ids", [])
+        if key in ids:
+            return True
+        ids.append(key)
+        st["ids"] = ids[-500:]
+        runtime.save_json("processed_events.json", st)
+        return False
 
 
 def main():
@@ -125,7 +130,8 @@ def main():
             action = "intake"
         if not action:
             return
-        if _dup((req.payload or {}).get("event_id") or f"{ch}:{ev.get('ts')}"):
+        # ch:ts で統一＝同一発話の message と app_mention は同一鍵で1回に畳む（event_id は両者で別＝素通りする）
+        if _dup(f"{ch}:{ev.get('ts')}"):
             return
         try:
             if action == "apply":
