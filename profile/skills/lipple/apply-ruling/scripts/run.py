@@ -35,6 +35,7 @@ COMPLETE_WORDS = ("直し", "なおし", "修正しました", "修正済", "修
                   "対応済", "できました", "やりました", "反映しました", "なおしました")
 REMIND_EVERY_MIN = 120  # 完了報告が来ない時の再リマインド間隔（分）。最初のリマインドも nudge から この間隔後
 MAX_REMINDS = 2         # 再リマインドの最大回数（これ以上は止める＝spam防止）
+STALE_AFTER_MIN = 240   # 最後の促しから この分 無反応なら stale 終端＝未対応カウント(chiaki-pdca)から外す
 
 
 def _norm(s: str) -> str:
@@ -242,6 +243,15 @@ def _phase_completion(items: dict) -> int:
             if base and rc < MAX_REMINDS and (now - base) >= REMIND_EVERY_MIN * 60:
                 source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_remind_text()}")
                 it["last_remind_ts"], it["remind_count"] = now, rc + 1
+                acted += 1
+            elif base and rc >= MAX_REMINDS and (now - base) >= STALE_AFTER_MIN * 60:
+                # 促しを使い切り、最後の促しから十分経っても無反応 → stale 終端。
+                # chiaki-pdca の未対応カウントは pending/awaiting_completion のみ集計＝stale は自動で外れる。戸田へ1回だけ通知。
+                it["status"], it["stale_ts"] = "stale", now
+                link = _permalink(src_ch, src_ts, src_ts)
+                source.post_thread_reply(
+                    runtime.CH_CHIAKI_MGMT, tts,
+                    f"<@{runtime.TODA}>\n促しを{MAX_REMINDS}回送っても反応がないため、いったん見送り扱い（stale）にします。\n{link}")
                 acted += 1
     return acted
 
