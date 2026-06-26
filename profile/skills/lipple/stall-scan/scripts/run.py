@@ -48,9 +48,13 @@ def main():
         print(f"[SILENT] {len(cands)} stalls all within cooldown")
         return
 
-    lines = [f"[停滞検知 {len(fresh)}件] now={runtime.time.strftime('%Y-%m-%d', runtime.time.gmtime(now+9*3600))}"]
+    # chiaki 自身の機械的検知の控え＝セルフメンション付き（戸田さんへ ping はしない・トーン規約）。silence-reminder と同形式。
+    ch_url = f"https://lipple.slack.com/archives/{ch}"
+    date = runtime.time.strftime('%Y-%m-%d', runtime.time.gmtime(now + 9 * 3600))
+    lines = [f"<@{runtime.CHIAKI_SELF}>", "報告：停滞検知", f"対象：{ch_url}", "",
+             f"停滞を{len(fresh)}件検知しました（{date}時点）。"]
     for s in fresh:
-        lines.append(f"・{','.join(s['signals'])} | {s['task']} | 期限{s['due']} 人活動{s['human_replies']} "
+        lines.append(f"• {','.join(s['signals'])} | {s['task']} | 期限{s['due']} 人活動{s['human_replies']} "
                      f"経過{s['age_days']}日 root_by_bot={s['root_by_bot']}")
         # team への促し方は承認系
         runtime.record_finding("stall", {"channel": ch, **s})
