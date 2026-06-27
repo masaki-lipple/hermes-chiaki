@@ -3,6 +3,7 @@
 cron 例: */5 * * * * （--no-agent / --script）
 終業後は鳴らさない・連打しない（state の already_reminded_after_ts で担保）。LLM 非起動。
 """
+import datetime as dt
 import os
 import sys
 from pathlib import Path
@@ -10,6 +11,11 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import observe, runtime, source  # noqa: E402
 
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
+# チャンネルごとの「報告すべき対象者」＝促す相手。最後に投稿した人ではない（管理者/戸田さんへの誤爆を防ぐ）。
+CH_OWNER = {runtime.CH_YU_PDCA: "U09T44VEZM1"}  # #5035 = 松永さん
+# リマインドを出してよい時間帯（平日のみ）。松永さんのシフトは09:00-18:00だが、終業間際(17時台)の無音は
+# 65分到達が18時以降になるため、夕方の取りこぼしを防ぐべく上限を20時にする。週末・深夜は鳴らさない。
+WORK_START_H, WORK_END_H = 9, 20
 # 固定フォールバック文（Haiku 生成が失敗/不自然/へりくだり過ぎた時に必ず出す）。言い切り・へりくだらない
 FALLBACK_BODY = "最後の報告から{gap}分が経過しているので、報告をお願いします！"
 
@@ -50,6 +56,13 @@ def _regulate(text: str) -> str:
 def main():
     ch = runtime.CH_YU_PDCA
     now = runtime.now_ts()
+    # 平日・勤務時間外は鳴らさない（cron が 24/7 でも安全側で弾く＝週末/深夜/終業後翌日の誤爆防止）。
+    # ※ Slack を叩く前に弾くので off-hours は API 呼び出しもしない。
+    jst = dt.datetime.fromtimestamp(now, dt.timezone(dt.timedelta(hours=9)))
+    if jst.weekday() >= 5 or not (WORK_START_H <= jst.hour < WORK_END_H):
+        print(f"[SILENT] off-hours/weekend ({jst:%a %H:%M})")
+        return
+    owner_id = CH_OWNER.get(ch)
     timers = runtime.load_json("channel_timers.json", {})
     t = timers.get(ch, {})
 
@@ -57,29 +70,32 @@ def main():
     if not recent:
         print("[SILENT] no messages")
         return
-    today = recent[-1]["datetime"][:10]
+    # 実際の現在JST日付で当日を決める。チャンネル最終投稿の日付にしない＝前日に終業文が無い/週末broadcastで
+    # 最終投稿が過去日でも、古い投稿を1時間ルールの基準にして巨大gapで誤爆しない（根因#2の本丸）。
+    today = jst.strftime("%Y-%m-%d")
     today_msgs = [m for m in recent if m["datetime"][:10] == today]
 
     dec = observe.silence_decision(
-        today_msgs, now, already_reminded_after_ts=t.get("already_reminded_after_ts"))
+        today_msgs, now, already_reminded_after_ts=t.get("already_reminded_after_ts"),
+        owner_id=owner_id)
     if not dec["fire"]:
         print(f"[SILENT] {dec['reason']} ({dec.get('gap_min', '-')}min)")
         return
 
-    last = today_msgs[-1]
     body = _compose(dec["gap_min"], now)
-    res = source.post_thread_reply(ch, dec["target_ts"], f"<@{last['user_id']}>\n{body}")
+    # 促す相手は必ず対象者(松永さん)＝最後に投稿した人ではない。target_ts も対象者の最終投稿。
+    res = source.post_thread_reply(ch, dec["target_ts"], f"<@{owner_id}>\n{body}")
     nudge_ts = res.get("ts") if isinstance(res, dict) else None
     # 自分のキー(already_reminded_after_ts)だけ最新へ書き戻す＝並行 obs-batch(*/10)のキーを巻き戻さない(二重nudge防止)
     latest = runtime.load_json("channel_timers.json", {})
     merged = latest.get(ch, {})
-    merged["already_reminded_after_ts"] = last["ts_float"]
+    merged["already_reminded_after_ts"] = float(dec["target_ts"])
     latest[ch] = merged
     runtime.save_json("channel_timers.json", latest)
     # 控えを #8902 へ（セルフメンション＝戸田さんはping無し・対象=チャンネルURL・末尾に促した投稿リンク）
     ch_url = f"https://{TEAM}.slack.com/archives/{ch}"
     notice = (f"<@{runtime.CHIAKI_SELF}>\n報告：リマインド控え\n対象：{ch_url}\n\n"
-              f"最終投稿（{last['datetime']}）から{int(dec['gap_min'])}分無音 → スレッドで1回促しました。")
+              f"対象者の最終報告（{dec['target_dt']}）から{int(dec['gap_min'])}分無音 → スレッドで1回促しました。")
     if nudge_ts:
         notice += (f"\n\nhttps://{TEAM}.slack.com/archives/{ch}/p{nudge_ts.replace('.', '')}"
                    f"?thread_ts={dec['target_ts']}&cid={ch}")

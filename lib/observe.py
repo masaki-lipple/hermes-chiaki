@@ -394,13 +394,21 @@ SILENCE_THRESHOLD_SEC = 65 * 60
 
 def silence_decision(messages: list[dict], now_ts: float,
                      threshold_sec: int = SILENCE_THRESHOLD_SEC,
-                     already_reminded_after_ts: float | None = None) -> dict:
-    """今 now_ts 時点で鳴らすべきか。終業後は鳴らさない・連打しない。"""
+                     already_reminded_after_ts: float | None = None,
+                     owner_id: str | None = None) -> dict:
+    """今 now_ts 時点で鳴らすべきか。終業後は鳴らさない・連打しない。
+    owner_id 指定時は『対象者(報告すべき松永さん)自身の投稿』だけで判定する＝管理者/戸田さんの投稿を
+    1時間ルールの基準にしない（他者の投稿に『報告して』と誤爆しない・対象者が未投稿の日は鳴らさない・
+    終業も対象者基準で見る）。指定なしは従来どおり全投稿で判定。"""
     if not messages:
         return {"fire": False, "reason": "no_messages"}
     msgs = sorted(messages, key=lambda x: x["ts_float"])
+    if owner_id is not None:
+        msgs = [m for m in msgs if m.get("user_id") == owner_id]
+        if not msgs:
+            return {"fire": False, "reason": "owner_no_posts"}
     last = msgs[-1]
-    # 終業が当日のどこかに出ていれば打ち止め（終業後にノート画像等が続くため最後だけ見ない）
+    # 終業が（対象者の）当日投稿に出ていれば打ち止め（終業後にノート画像等が続くため最後だけ見ない）
     if any(classify_event(m["text"]).get("type") == "eow" for m in msgs):
         return {"fire": False, "reason": "eow_reached", "last_ts": last["ts_float"]}
     gap = now_ts - last["ts_float"]
