@@ -79,43 +79,34 @@ def _interpret(draft: str, reply: str) -> str:
             "『一文足して』『短く』『丁寧に』等の編集指示なら下書きに反映。"
             "出力は松永さんへ送る本文のみ。宛名(@)・前置き・引用符は付けない。"
         )
-        return observe.enforce_regulations((llm.haiku(prompt, max_tokens=220) or "").strip())
+        return observe.enforce_regulations(_strip_fake_mentions((llm.haiku(prompt, max_tokens=220) or "").strip()))
     except Exception:
         return ""
 
 
+# 実メンションは呼び側が <@U…> で付与する。生成文中の裸の @名前 は架空メンション（Haiku が
+# 「@修正担当者さん」等をでっち上げた＝2026-07-01 戸田さん指摘）なので除去。<@U…> は直前が < なので温存。
+_FAKE_MENTION = re.compile(r"(?<!<)@[^\s<>]{1,20}\s*")
+
+
+def _strip_fake_mentions(s: str) -> str:
+    return _FAKE_MENTION.sub("", s).strip()
+
+
+# 催促・お礼・再確認は routine な機械リマインド＝決定論の固定文にする（Haiku 生成だと架空メンション
+# 「@修正担当者さん」や誤った時期「先週」を作る＝2026-07-01 戸田さん指摘。silence と同じ方針）。
 def _thanks() -> str:
-    """完了報告への短いお礼。Haiku でゆらがせ、失敗時は固定文。"""
-    try:
-        from lib import llm
-        return observe.enforce_regulations(llm.haiku("松永さんが指摘どおりに表記を修正してくれたことへの短いお礼を1文。"
-                         "絵文字なし・明るく簡潔・です/ます。") or "修正ありがとうございます！")
-    except Exception:
-        return "修正ありがとうございます！"
+    return "修正ありがとうございます！助かりました。"
 
 
 def _remind_text() -> str:
-    """完了報告が来ない時の再リマインド。Haiku でゆらがせ、失敗時は固定文。"""
-    try:
-        from lib import llm
-        return llm.haiku("先に依頼した表記修正の完了報告がまだ来ていません。"
-                         "確認と対応をうながす1〜2文。絵文字なし・きつくしすぎず・です/ます。"
-                         "完了済みならメンションで教えてほしい旨も。") \
-            or "まだ修正ができていません。もう一度確認してください。"
-    except Exception:
-        return "まだ修正ができていません。もう一度確認してください。"
+    return ("お願いした表記修正について、まだ完了のご報告をいただけていません。"
+            "ご対応いただけましたら、メンションで教えてください。")
 
 
 def _recheck_text() -> str:
-    """完了報告は来たが まだ直っていない時の指摘。Haiku、失敗時は固定文。"""
-    try:
-        from lib import llm
-        return llm.haiku("修正完了の報告をもらったが、確認するとまだ直っていなかった。"
-                         "お礼を一言添えつつ、まだ反映されていないようなので再確認をお願いする1〜2文。"
-                         "絵文字なし・責めない・です/ます。") \
-            or "まだ修正ができていません。もう一度確認してください。"
-    except Exception:
-        return "まだ修正ができていません。もう一度確認してください。"
+    return ("ご報告ありがとうございます。確認したところ、まだ反映されていないようです。"
+            "お手数ですが、もう一度ご確認をお願いします。")
 
 
 def _verify_fixed(it: dict, replies: list):
