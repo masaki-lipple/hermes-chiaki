@@ -2,6 +2,14 @@
 
 Lipple 業務を観測する Slack 常駐 AI「Chiaki AI」。PDCA チャンネルを観測し、決定論スクリプト＋Haiku（文面・判断のみ）で動く**観測ボット**。会話エージェント（execute_code 等）は安全のため**持たない**。
 
+## ★ Codex の役割分担（最重要・2026-07-02 戸田決定）
+あなた（Codex）は**修正役**。ディレクション・レビュー・デプロイ・報告は Claude Code が行う。
+- **やること**: 指示されたコード修正・そのテスト（`python3 -m py_compile`＋依頼に書かれた検証）だけ。
+- **やらないこと**: `git commit`／`git push`／VPS への SSH・デプロイ／Slack への投稿／Notion の更新。
+  これらは Claude Code 側の工程（以下の「配備・運用」「修正フロー」は全体像の参考情報）。
+- 変更はワーキングツリーに残したまま終了する（レビューは Claude Code が git diff で行う）。
+- 既存コードの流儀に合わせる: 日本語コメント・stdlib のみ・`runtime.load_json/save_json` 等の既存ヘルパを使う。
+
 ## 配備・運用
 - 本番は VPS（`ssh -i ~/.ssh/hermes_vps chiaki@220.158.22.130`）。コードは GitHub `masaki-lipple/hermes-chiaki`（private）。
 - 反映は **`~/deploy.sh`**（git pull＋コード同期）。`lib/` と `profile/skills/` が同期される。
