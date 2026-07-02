@@ -87,10 +87,12 @@ def _classify_intake(text: str, context: str = "") -> list:
         + (f"直前のやりとり(古い順):\n{context}\n" if context else "")
         + f"メッセージ: {body}\n"
         "各要素に 要約(title用・一言[:200])・詳細(背景や直し方)・(rule時のみ)誤例/正例・確信度(0〜1) を付ける。\n"
+        "依頼が『毎回・毎日・定期的に・自動で・定型化して』など**繰り返し実行する仕組み**を求めるものなら"
+        ' "routine": true を付ける（単発の修正依頼は false）。\n'
         'JSON 配列のみ: [{"type":"issue|rule|edit|question|unclear|none","issue_kind":"","rule_kind":"",'
-        '"要約":"","詳細":"","誤例":"","正例":"","確信度":0.0}]'
+        '"要約":"","詳細":"","誤例":"","正例":"","確信度":0.0,"routine":false}]'
     )
-    out = llm.haiku(prompt, max_tokens=700) or ""
+    out = llm.gpt(prompt, max_tokens=700) or ""  # 中枢の振り分け＝GPT(失敗時Haiku自動フォールバック)
     arr = None
     mm = re.search(r"\[.*\]", out, re.S)
     if mm:
@@ -178,7 +180,12 @@ def _reply(ch: str, root: str, body: str, url: str = "") -> None:
 
 
 def _file_issue(p: dict, permalink: str, ch: str):
-    return notion.create_request(p.get("要約", ""), p.get("詳細", ""), slack_url=permalink,
+    summary = p.get("要約", "")
+    # 繰り返しの仕組み化を求める依頼＝定型業務化の候補としてマーク（Claude Code が Issue_DB の
+    # このプレフィクスと intake_log.jsonl を読み、定型業務に昇格させるか判定して実装する運用）。
+    if p.get("routine") and not summary.startswith("定型業務化"):
+        summary = f"定型業務化: {summary}"
+    return notion.create_request(summary, p.get("詳細", ""), slack_url=permalink,
                                  channel_label=_ch_label(ch), kind=p.get("issue_kind") or "その他")
 
 
@@ -233,7 +240,7 @@ def _answer(question: str, ch: str, root: str) -> str:
                    f"本日の観測: 表記{fk.get('notation', 0)}・誤字{fk.get('typo', 0)}・停滞{fk.get('stall', 0)}件、"
                    f"裁定 GO/反映{rv.get('go', 0) + rv.get('interpret', 0)}・完了{rv.get('completed', 0)}件。\n"
                    "依頼に沿って上記から答える。")
-    return (llm.haiku(prompt, max_tokens=450) or "").strip()
+    return (llm.gpt(prompt, max_tokens=450) or "").strip()  # 会話＝GPT(失敗時Haiku)
 
 
 _REFLOW_RE = re.compile(r"改行|空行|行間|レイアウト|間隔|スペース|詰め|空け|あけ|開け")
@@ -391,11 +398,27 @@ def _expire_stale(items: dict) -> None:
     for it in items.values():
         if it.get("status") == "awaiting_confirm" and now - float(it.get("proposed_at", now)) > INTAKE_TIMEOUT_SEC:
             it["status"] = "expired"
+            _log("expired", it.get("channel", ""), it.get("thread_root", ""),
+                 依頼元=(it.get("mention_text") or "")[:200])
             try:  # 無音で消さない＝1回だけ知らせる（失効は片道なので二重通知しない）
                 _reply(it.get("channel"), it.get("thread_root"),
                        "時間が空いたので、この確認はいったん閉じますね。必要でしたら、もう一度メンションしてください。")
             except Exception as e:
                 print(f"[intake] expire notice failed: {e}")
+
+
+def _log(event: str, ch: str = "", root: str = "", m: dict = None, **extra) -> None:
+    """業務化トリアージログ＝「しゃべりかけ→対応」の全記録（intake_log.jsonl）。
+    Claude Code が後で読み、繰り返される依頼を定型業務へ昇格するか判定する材料（戸田設計 2026-07-02）。"""
+    try:
+        rec = {"ts": runtime.now_ts(), "event": event, "channel": ch, "thread_root": root}
+        if m is not None:
+            rec["msg_ts"] = m.get("ts")
+            rec["依頼"] = (m.get("text") or "")[:300]
+        rec.update(extra)
+        runtime.append_jsonl("intake_log.jsonl", rec)
+    except Exception as e:
+        print(f"[intake] log failed: {e}")
 
 
 def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
@@ -404,6 +427,9 @@ def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
                       "permalink": _permalink(ch, m["ts"], root), "proposals": proposals,
                       "proposed_at": runtime.now_ts(), "last_seen_ts": m["ts"], "propose_count": 1}
     _reply(ch, root, _propose_text(proposals))
+    _log("propose", ch, root, m,
+         分類=[{"type": p.get("type"), "kind": p.get("issue_kind") or p.get("rule_kind") or "",
+               "要約": (p.get("要約") or "")[:100], "routine": bool(p.get("routine"))} for p in proposals])
     return 1
 
 
@@ -458,11 +484,13 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
             return _await(items, m, ch, root, [sym])
         st = _maybe_edit_root(ch, root, m["text"], m["text"])  # 生指示＝改行/空白の語を保つ
         _reply(ch, root, _EDIT_MSG[st])
+        _log("edit", ch, root, m, 結果=st)
         return _mark_done(items, m, ch, root)
     if typ == "question":
         ans = _answer(m["text"], ch, root)
         if ans:
             _reply(ch, root, ans)
+            _log("answer", ch, root, m, 回答=(ans or "")[:200])
             return _mark_done(items, m, ch, root)
         return 0
     if typ == "unclear":
@@ -486,6 +514,7 @@ def _confirm_inner(it: dict, m: dict, ch: str, root: str) -> int:
     if v == "reject":
         it["status"] = "cancelled"
         _reply(ch, root, "わかりました、今回は見送りますね。")
+        _log("cancelled", ch, root, m, 依頼元=(it.get("mention_text") or "")[:200])
         return 1
     # unclear（bills 無し）はまだ候補が定まっていない → go でも再分類
     if v == "go" and bills:
@@ -503,6 +532,9 @@ def _confirm_inner(it: dict, m: dict, ch: str, root: str) -> int:
             it["status"], it["page_urls"] = "filed", urls
             head = "登録しました！" if len(urls) == 1 else f"{len(urls)}件 登録しました！"
             _reply(ch, root, head + extra + "\n" + "\n".join(urls))
+            _log("filed", ch, root, m, urls=urls,
+                 routine=any(bool(p.get("routine")) for p, _ in ok),
+                 依頼元=(it.get("mention_text") or "")[:200])
         elif urls and ng:  # 部分失敗＝失敗分だけ残し再試行可能に（成功分は除く＝重複起票しない）
             it["proposals"], it["status"] = ng, "awaiting_confirm"
             it["page_urls"], it["proposed_at"] = urls, runtime.now_ts()

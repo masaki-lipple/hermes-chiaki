@@ -5,11 +5,16 @@
 from __future__ import annotations
 import json
 import os
+import shutil
+import subprocess
 import urllib.request
 from pathlib import Path
 
 MODEL_HAIKU = "claude-haiku-4-5"
 MODEL_OPUS = "claude-opus-4-8"  # 判断系（同期時のルール分類など低頻度）
+# 中枢（会話・振り分け）用＝ChatGPT サブスク経由の GPT（非公式 llm-openai-via-codex・追加課金なし）。
+# サブスク経路に gpt-5.5 は無い（2026-07 実機確認）＝最上位は gpt-5.4。auth は ~/.codex/auth.json。
+MODEL_GPT = "openai-codex/gpt-5.4"
 
 # chiaki のトンマナ（SOUL のトンマナ規約に対応。戸田さんの調整時はここと SOUL を更新）
 CHIAKI_TONE = (
@@ -82,3 +87,53 @@ def opus(user: str, system: str = "", max_tokens: int = 1024) -> str:
     return _call(MODEL_OPUS, user,
                  system or "あなたは正確な日本語校正・分類アシスタントです。指示に厳密に従う。",
                  max_tokens, timeout=90)
+
+
+def _llm_bin() -> str:
+    """`llm` CLI の場所（systemd/cron の PATH に ~/.local/bin が無くても解決）。"""
+    return (os.environ.get("HERMES_LLM_BIN")
+            or shutil.which("llm")
+            or str(Path.home() / ".local/bin/llm"))
+
+
+def _gpt_raw(user: str, system: str, timeout: int) -> str:
+    cmd = [_llm_bin(), "-m", MODEL_GPT, user]
+    if system:
+        cmd += ["-s", system]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(f"gpt rc={p.returncode}: {(p.stderr or '').strip()[:200]}")
+    return (p.stdout or "").strip()
+
+
+def _note_gpt_fallback(err: str) -> None:
+    """GPT 経路が落ちたら日1回だけ #8902 に控え（サイレント劣化にしない・handoff_C の故障検知方針）。"""
+    try:
+        import datetime as _dt
+        from lib import runtime, source
+        today = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+        st = runtime.load_json("gpt_fallback_notice.json", {})
+        if st.get("date") == today:
+            return
+        runtime.save_json("gpt_fallback_notice.json", {"date": today, "err": err[:200]})
+        source.post_message(runtime.CH_CHIAKI_MGMT,
+                            f"<@{runtime.CHIAKI_SELF}>\n報告：GPTルートの不調\n\n"
+                            "ChatGPTサブスク経由のGPT呼び出しが失敗したため、本日はHaikuで代替しています。"
+                            "認証(codex login)の期限切れの可能性があります。")
+    except Exception:
+        pass
+
+
+def gpt(user: str, system: str | None = None, max_tokens: int = 450, timeout: int = 90) -> str:
+    """中枢（会話・振り分け）用。ChatGPT サブスク経由の GPT-5.4 を叩き、失敗時は Haiku へ自動フォールバック
+    （高額側でなく安価側への退避＝コスト方針と整合）＋日1回 #8902 に控え。呼び側の扱いは haiku() と同じ。"""
+    sys_prompt = system if system is not None else _chiaki_system()
+    try:
+        out = _gpt_raw(user, sys_prompt, timeout)
+        if out:
+            return out
+        raise RuntimeError("gpt empty response")
+    except Exception as e:
+        print(f"[llm] gpt failed -> haiku fallback: {type(e).__name__}: {e}")
+        _note_gpt_fallback(str(e))
+        return _call(MODEL_HAIKU, user, sys_prompt, max_tokens)
