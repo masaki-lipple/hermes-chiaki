@@ -468,6 +468,20 @@ def _mark_done(items: dict, m: dict, ch: str, root: str) -> int:
     return 1
 
 
+def _smalltalk(text: str) -> str:
+    """指摘でも依頼でもない呼びかけ（テスト・あいさつ・お礼など）への短い自然な返事。失敗時は固定文。"""
+    fb = "はい、Chiaki AIです。ちゃんと届いています！指摘・依頼・質問があればどうぞ。"
+    try:
+        from lib import llm
+        body = re.sub(rf"{re.escape(MENTION)}|<@U[A-Z0-9]+>", "", text or "").strip()
+        out = (llm.gpt(f"戸田さんからの軽い呼びかけ「{body[:120]}」に1〜2文で自然に応じてください。"
+                       "指摘・依頼・質問があれば受け付ける旨をさりげなく添える。宛名(@)・絵文字・引用符は付けない。",
+                       max_tokens=120) or "").strip()
+        return out or fb
+    except Exception:
+        return fb
+
+
 def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
     if m["ts"] in items:  # 既に提案/起票/処理済みの同一メンション＝再処理時に二重投稿しない（冪等）
         return 0
@@ -495,6 +509,12 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
         return 0
     if typ == "unclear":
         return _await(items, m, ch, root, [cs[0]])
+    # none でも明示的な @メンション付きの呼びかけには短く自然に応じる＝無視に見せない
+    # （2026-07-02 戸田「テスト」への無言が故障に見えた）。メンション無しの none（お礼・FYI・相づち）は従来どおり静観。
+    if MENTION in (m.get("text") or ""):
+        _reply(ch, root, _smalltalk(m["text"]))
+        _log("smalltalk", ch, root, m)
+        return _mark_done(items, m, ch, root)
     return 0  # none
 
 
