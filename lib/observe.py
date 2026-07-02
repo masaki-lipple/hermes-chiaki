@@ -169,13 +169,13 @@ def extract_task_events(messages: list[dict]) -> dict:
     return {"actuals": sorted(actuals, key=lambda a: a["start_ts"]), "unmatched": unmatched}
 
 
-# ── 種別の細分化（「対象の種別」表記・2026-07-03 戸田決定） ────────
+# ── 種別の細分化（「種別（対象）」表記・全角かっこ・2026-07-03 戸田決定） ──
 _PROG_RE = re.compile(r"^(?:業務を中断し、)?(.+?)を進めています")
 _KIND2_FIX = (
-    ("タイトル", ("タイトル", "文言", "誤字", "見出し")),
+    ("文言", ("タイトル", "文言", "誤字", "見出し")),
     ("固定ページ", ("固定ページ", "店舗一覧", "店舗固定", "トップページ")),
     ("求人ページ", ("求人",)),
-    ("コンテンツ", ("コンテンツ", "記事", "インタビュー", "コラム", "吹き出し", "赤文字")),
+    ("コンテンツページ", ("コンテンツ", "記事", "インタビュー", "コラム", "吹き出し", "赤文字")),
 )
 _KIND2_NAGASHI = (
     ("求人ページ", ("求人",)),
@@ -192,7 +192,7 @@ def _kind2_pick(rules: tuple, texts: list) -> str | None:
 
 
 def refine_actual_kinds(actuals: list[dict], messages: list[dict]) -> None:
-    """actuals へ kind2=「対象の種別」（例: 求人ページの修正）を in-place 付与
+    """actuals へ kind2=「種別（対象）」（例: 修正（求人ページ）・全角かっこ）を in-place 付与
     （対象を特定できなければ付けない）。
     証拠の優先順: 修正=①core自身 ②同案件の開始/終了/進捗投稿 ③開始前の指示（type=other・案件名含む）
     ／流し込み=①core ③指示 ②自投稿。流し込みの開始/終了投稿は全件が
@@ -231,7 +231,7 @@ def refine_actual_kinds(actuals: list[dict], messages: list[dict]) -> None:
         for tier in order:
             label = _kind2_pick(rules, texts[tier])
             if label:
-                a["kind2"] = f"{label}の{base}"
+                a["kind2"] = f"{base}（{label}）"
                 break
 
 
