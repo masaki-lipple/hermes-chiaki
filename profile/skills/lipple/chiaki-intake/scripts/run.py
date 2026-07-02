@@ -176,6 +176,15 @@ def _reply(ch: str, root: str, body: str, url: str = "") -> None:
     b = runtime.ensure_punct(observe.enforce_regulations(_neutralize_mentions(body)))
     if url:
         b += f"\n{url}"
+    # この処理で LLM が文面/判断を作った場合はモデル名を末尾に表記（戸田要望 2026-07-02）。
+    # タグ無し＝固定文/決定論。main が各メッセージ処理前に reset_used() する。
+    try:
+        from lib import llm
+        tag = llm.last_used()
+        if tag:
+            b += f"\n（{tag}）"
+    except Exception:
+        pass
     source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{b}")
 
 
@@ -608,6 +617,11 @@ def main():
     # uniq は ts 昇順。失敗が出たチャンネルはそれ以降カーソルを進めない＝失敗メッセージを取りこぼさず次回再処理する。
     maxts, failed, acted = {}, set(), 0
     for m, root, ch, _hint in uniq:
+        try:  # モデル表記（GPT 5.4等）の取り違え防止＝メッセージごとに使用記録をリセット
+            from lib import llm as _llm
+            _llm.reset_used()
+        except Exception:
+            pass
         it = _find_awaiting(items, ch, root, m["ts"])
         try:
             acted += _handle_confirm(it, m, ch, root) if it else _handle_propose(m, ch, root, items)
