@@ -196,7 +196,9 @@ def refine_actual_kinds(actuals: list[dict], messages: list[dict]) -> None:
     証拠の優先順: 修正=①core自身 ②同案件の開始/終了/進捗投稿 ③開始前の指示（type=other・案件名含む）
     ／流し込み=①core ③指示 ②自投稿。流し込みの開始/終了投稿は全件が
     「コンテンツの流し込みを行います」の定型文で対象を判別できないため、指示を先に見る。
-    メモ・雑談（type=other で案件名なし）は証拠に使わない＝週次タスクメモ等の誤マッチ防止。"""
+    メモ・雑談（type=other で案件名なし）は証拠に使わない＝週次タスクメモ等の誤マッチ防止。
+    指示は案件名と同じ節（、。！？改行区切り）だけを証拠にする＝「A が終わったら B の求人追加を」
+    のような別案件への依頼に釣られない。"""
     evs = []
     for m in sorted(messages, key=lambda x: x["ts_float"]):
         ev = classify_event(m["text"]) or {}
@@ -220,9 +222,10 @@ def refine_actual_kinds(actuals: list[dict], messages: list[dict]) -> None:
                if typ in ("start", "end", "progress")
                and (c == core or (len(name) >= 3 and name in c))
                and a["start_ts"] - 60 <= ts <= a["end_ts"] + 60]
-        instr = [t for typ, c, t, ts in evs
+        instr = [cl for typ, c, t, ts in evs
                  if typ == "other" and len(name) >= 3 and name in t
-                 and a["start_ts"] - 86400 <= ts <= a["start_ts"] + 300]
+                 and a["start_ts"] - 86400 <= ts <= a["start_ts"] + 300
+                 for cl in re.split(r"[、。！？!?\n]", t) if name in cl]
         texts = {"core": [core], "own": own, "instr": instr}
         for tier in order:
             label = _kind2_pick(rules, texts[tier])
