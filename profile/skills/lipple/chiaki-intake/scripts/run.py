@@ -355,18 +355,24 @@ def _candidates(cur: dict, items: dict):
     awaiting = {(it.get("channel"), it.get("thread_root")) for it in items.values()
                 if it.get("status") == "awaiting_confirm"}
     # 戸田さん以外からの @Chiaki AI ＝エスカレーション対象（権限は戸田さんのみ・2026-07-02）。
-    # ただし促し等の pending 対象スレッド内は apply-ruling の完了報告フローなので拾わない。
-    pend_src = {(it.get("source_channel"), it.get("source_ts")) for it in pend.values()}
+    # ①トップレベルのみ＝スレッド内の返信（chiaki のリマインドへの「OK」等）は依頼でなく応答なので対象外
+    # ②直近1時間の新規のみ＝カーソル未設定/リセット時に過去分へ一括送信しない
+    # （どちらも 2026-07-02 の誤爆5件＝過去の「OK」への後追いエスカレーションの再発防止）。
+    _now = runtime.now_ts()
 
     def _other(uid):
         return uid and uid not in (runtime.TODA, runtime.CHIAKI_SELF, runtime.GCP_TASK_BOT)
+
+    def _esc_ok(m):
+        return (_other(m.get("user_id")) and MENTION in (m.get("text") or "")
+                and m["ts_float"] > _now - 3600)
     cand = []
     # #8902/#5902：戸田さんの全投稿（top-level＋提案以外スレッド返信）
     since_m = float(cur.get(mgmt, 0.0))
     for m in source.read_recent(mgmt, limit=50):
         if m["user_id"] == runtime.TODA and m["ts_float"] > since_m:
             cand.append((m, m["ts"], mgmt, ""))
-        elif _other(m["user_id"]) and m["ts_float"] > since_m and MENTION in (m.get("text") or ""):
+        elif m["ts_float"] > since_m and _esc_ok(m):
             cand.append((m, m["ts"], mgmt, "escalate"))
         if m.get("thread_replies") and m["ts"] not in open_threads:
             for r in source.read_thread(mgmt, m["ts"]):
@@ -377,7 +383,7 @@ def _candidates(cur: dict, items: dict):
         # #5902 の戸田さん top-level も窓口（監査確定：スレッド返信しか見ておらず@メンションが無視されていた）
         if m["user_id"] == runtime.TODA and m["ts_float"] > since_p:
             cand.append((m, m["ts"], pdca, ""))
-        elif _other(m["user_id"]) and m["ts_float"] > since_p and MENTION in (m.get("text") or ""):
+        elif m["ts_float"] > since_p and _esc_ok(m):
             cand.append((m, m["ts"], pdca, "escalate"))
         if m.get("thread_replies"):
             for r in source.read_thread(pdca, m["ts"]):
@@ -391,22 +397,17 @@ def _candidates(cur: dict, items: dict):
         for m in source.read_recent(ch, limit=50):
             if (m["user_id"] == runtime.TODA and m["ts_float"] > since and MENTION in (m.get("text") or "")):
                 cand.append((m, m["ts"], ch, ""))
-            elif (_other(m["user_id"]) and m["ts_float"] > since and MENTION in (m.get("text") or "")
-                  and (ch, m["ts"]) not in pend_src):
+            elif m["ts_float"] > since and _esc_ok(m):
+                # トップレベルの新規メンションのみ。スレッド返信（リマインドへの「OK」等）は対象外。
                 cand.append((m, m["ts"], ch, "escalate"))
             scan = (m.get("thread_replies") and
                     (m.get("user_id") == runtime.CHIAKI_SELF or (ch, m["ts"]) in awaiting
                      or float(m.get("thread_latest") or 0) > since))
             if scan:
                 for r in source.read_thread(ch, m["ts"]):
-                    if r["ts"] == m["ts"] or r["ts_float"] <= since:
-                        continue
-                    if (r["user_id"] == runtime.TODA
+                    if (r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since
                             and (MENTION in (r.get("text") or "") or (ch, m["ts"]) in awaiting)):
                         cand.append((r, m["ts"], ch, ""))
-                    elif (_other(r["user_id"]) and MENTION in (r.get("text") or "")
-                          and (ch, m["ts"]) not in pend_src):
-                        cand.append((r, m["ts"], ch, "escalate"))
     return cand
 
 
