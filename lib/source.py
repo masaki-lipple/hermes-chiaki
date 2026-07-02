@@ -202,7 +202,23 @@ def human_replies(channel_id: str, root: dict, bot_user_ids: set[str]) -> int | 
     return sum(1 for m in replies[1:] if m["user_id"] not in bot_user_ids)
 
 
+def _ensure_mention(channel_id: str, text: str) -> str:
+    """#8902（管理ch）宛の投稿が冒頭メンションで始まらない場合、規約（chiaki の自発投稿は
+    必ず冒頭に <@戸田> か セルフメンション）に沿ってセルフメンションを自動付与する。
+    手書き報告・続報の付け忘れを人の注意でなく仕組みで防ぐ（2026-07-03 戸田指摘＝
+    続報2件でメンション漏れ。コード生成の投稿はテンプレートで担保済みのため実質無影響）。"""
+    if not (text or "").lstrip().startswith("<@"):
+        try:
+            from lib import runtime
+            if channel_id == runtime.CH_CHIAKI_MGMT:
+                return f"<@{runtime.CHIAKI_SELF}>\n{text}"
+        except Exception:
+            pass
+    return text
+
+
 def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
+    text = _ensure_mention(channel_id, text)
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id} thread={thread_ts}\n  {text}")
         return {"ok": True, "dry": True}
@@ -214,6 +230,7 @@ def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
 
 
 def post_message(channel_id: str, text: str) -> dict:
+    text = _ensure_mention(channel_id, text)
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id}\n  {text}")
         return {"ok": True, "dry": True}
@@ -226,6 +243,7 @@ def post_message(channel_id: str, text: str) -> dict:
 
 def update_message(channel_id: str, ts: str, text: str) -> dict:
     """自分(chiaki)の既存投稿を編集（chat.update）。学習内容を投稿に反映する用。"""
+    text = _ensure_mention(channel_id, text)
     if FIXTURES or not _TOKEN:
         print(f"[DRY update] ch={channel_id} ts={ts}\n  {text}")
         return {"ok": True, "dry": True}
