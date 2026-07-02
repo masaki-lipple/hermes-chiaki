@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""task-follow: task_ledger.json から確認待ち/期限当日の未報告を機械的に追う。
+"""task-follow: task_ledger.json から完了報告の確認待ちを機械的に追う。
 cron 例: 50 8 * * 1-5（--no-agent / --script）。LLM 非起動。
+期限当日の未報告リマインドは Task AI（GCP_TASK_BOT が8:30に送信）の領分なので扱わない。
 """
 from __future__ import annotations
 
@@ -93,7 +94,7 @@ def main():
     today = _today_jst(now)
     ledger = runtime.load_json("task_ledger.json", {}).get("tasks", {})
     sent = runtime.load_json("task_follow.json", {})
-    counts = {"A": 0, "B": 0, "skip_kanryo": 0, "read_error": 0}
+    counts = {"A": 0, "skip_kanryo": 0, "read_error": 0}
 
     for t in ledger.values():
         ch = t.get("channel")
@@ -111,32 +112,22 @@ def main():
             continue
 
         report = _latest_report(replies, root_ts)
-        if report:
-            mentioned = _report_mentions(report)
-            if not mentioned:
-                continue
-            report_date = (report.get("datetime") or "")[:10]
-            if report_date and report_date < today and not _mentioned_replied_after(replies, mentioned, report):
-                key = f"A:{ch}:{root_ts}:{report.get('ts')}"
-                if key not in sent:
-                    mentions = " ".join(f"<@{uid}>" for uid in mentioned)
-                    source.post_thread_reply(ch, root_ts, f"{mentions}\n報告の確認をお願いします！")
-                    sent[key] = {"ts": now}
-                    counts["A"] += 1
+        if not report:
             continue
-
-        due = t.get("due")
-        assignees = _uniq(t.get("assignees") or [])
-        if due == today and assignees:
-            key = f"B:{ch}:{root_ts}:{due}"
+        mentioned = _report_mentions(report)
+        if not mentioned:
+            continue
+        report_date = (report.get("datetime") or "")[:10]
+        if report_date and report_date < today and not _mentioned_replied_after(replies, mentioned, report):
+            key = f"A:{ch}:{root_ts}:{report.get('ts')}"
             if key not in sent:
-                mentions = " ".join(f"<@{uid}>" for uid in assignees)
-                source.post_thread_reply(ch, root_ts, f"{mentions}\n本日が対応期限です。状況の報告をお願いします！")
+                mentions = " ".join(f"<@{uid}>" for uid in mentioned)
+                source.post_thread_reply(ch, root_ts, f"{mentions}\n報告の確認をお願いします！")
                 sent[key] = {"ts": now}
-                counts["B"] += 1
+                counts["A"] += 1
 
     runtime.save_json("task_follow.json", _cleanup_sent(sent, now))
-    print("[task-follow] A={A} B={B} skip_kanryo={skip_kanryo} read_error={read_error}".format(**counts))
+    print("[task-follow] A={A} skip_kanryo={skip_kanryo} read_error={read_error}".format(**counts))
 
 
 if __name__ == "__main__":

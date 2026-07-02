@@ -1,6 +1,6 @@
 ---
 name: task-follow
-description: task_ledger.json を元に、完了報告の確認待ちと期限当日の未報告を決定論でリマインドする。
+description: task_ledger.json を元に、完了報告の確認待ちを決定論でリマインドする。
 metadata:
   hermes:
     tags: [observation, deterministic, cron]
@@ -18,5 +18,5 @@ metadata:
 
 - 完了スタンプ `kanryo` があるタスクは対象外。
 - 完了報告があり、報告内の責任者メンションが翌日以降も未返信なら責任者へ確認催促。
-- 期限日になっても完了報告が無く、対応者がいる場合は対応者へ状況確認。
+- 期限当日の未報告リマインドは扱わない（Task AI が8:30に「このタスクは本日が対応期限です。」を送る領分・2026-07-03 戸田決定）。
 - LLM は使わない。
