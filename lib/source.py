@@ -166,6 +166,24 @@ def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 20
     return sorted(out, key=lambda x: x["ts_float"])
 
 
+def list_bot_channels() -> list[dict]:
+    """bot が参加しているチャンネル一覧 [{id,name}]（users.conversations・ページング対応）。
+    新しいクライアントチャンネルに bot を招待するだけで台帳等の観測対象に入る（ゼロコンフィグ）。"""
+    if FIXTURES:
+        return [{"id": cid, "name": fn.split(".")[0]} for cid, fn in _CH_FIXTURE.items()]
+    out, cursor = [], None
+    while True:
+        params = {"types": "public_channel,private_channel", "exclude_archived": "true", "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        res = _api_get("users.conversations", params)
+        out += [{"id": c.get("id"), "name": c.get("name", "")} for c in res.get("channels", [])]
+        cursor = (res.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+    return out
+
+
 def read_thread(channel_id: str, thread_ts: str) -> list[dict]:
     """スレッド返信（根を含む）。stall の human_replies 算出に使う。"""
     if FIXTURES:

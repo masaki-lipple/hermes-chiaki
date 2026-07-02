@@ -11,40 +11,55 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import observe, runtime, source  # noqa: E402
 
 
+# 台帳の対象外＝業務チャンネルでないもの（松永さんPDCA・chiaki発信ch）。それ以外の参加chは自動で対象。
+_LEDGER_EXCLUDE = {runtime.CH_YU_PDCA, runtime.CH_CHIAKI_PDCA, runtime.CH_CHIAKI_MGMT}
+
+
 def main():
     if not runtime.is_jp_workday():
         print("[SILENT] holiday/weekend")  # 祝日に停滞検知を出さない（cron は曜日しか知らない）
         return
-    ch = runtime.CH_NICHIJI
     now = runtime.now_ts()
     bots = {runtime.GCP_TASK_BOT}
 
-    # 30日(stall_scan の open_window)分をページングで全取得＝#200 超の古いタスク根を取りこぼさない
-    msgs = source.read_recent(ch, oldest_ts=now - 30 * 86400, limit=200, paginate=True)
-    # 各タスク根の human_replies を埋める（live はスレッド取得して bot 除外、fixtures は None→thread_replies代用）
-    for m in msgs:
-        if observe.parse_biz_task(m["text"]):
-            hr = source.human_replies(ch, m, bots)
-            if hr is not None:
-                m["human_replies"] = hr
-
-    # 30日窓のタスク根を毎回全再生成し、後続機能の共通台帳として保存する。
-    tasks = {}
-    for m in msgs:
-        parsed = observe.parse_biz_task(m["text"])
-        if not parsed:
+    # 台帳: bot が参加している業務チャンネル全部（a025/a027/a035…・新chは招待だけで対象化）。
+    # 30日窓をページングで全取得し、タスク根を毎回全再生成（冪等）。チャンネル単位で失敗を隔離。
+    tasks, ledger_msgs = {}, {}
+    for c in source.list_bot_channels():
+        ch_id = c.get("id")
+        if not ch_id or ch_id in _LEDGER_EXCLUDE:
             continue
-        tasks[m["ts"]] = {
-            "task": parsed["task"],
-            "due": parsed["due"],
-            "assignees": parsed["assignees"],
-            "author": m["user_id"],
-            "datetime": m["datetime"],
-            "reactions": m.get("reactions", []),
-            "human_replies": m.get("human_replies"),
-        }
+        try:
+            msgs = source.read_recent(ch_id, oldest_ts=now - 30 * 86400, limit=200, paginate=True)
+            # 各タスク根の human_replies を埋める（live はスレッド取得して bot 除外、fixtures は None→thread_replies代用）
+            for m in msgs:
+                if observe.parse_biz_task(m["text"]):
+                    hr = source.human_replies(ch_id, m, bots)
+                    if hr is not None:
+                        m["human_replies"] = hr
+            ledger_msgs[ch_id] = msgs
+        except Exception as e:
+            print(f"[stall-scan] ledger fetch failed ch={ch_id}: {e}")
+            continue
+        for m in msgs:
+            parsed = observe.parse_biz_task(m["text"])
+            if not parsed:
+                continue
+            tasks[f"{ch_id}:{m['ts']}"] = {
+                "channel": ch_id, "channel_name": c.get("name", ""), "ts": m["ts"],
+                "task": parsed["task"],
+                "due": parsed["due"],
+                "assignees": parsed["assignees"],
+                "author": m["user_id"],
+                "datetime": m["datetime"],
+                "reactions": m.get("reactions", []),
+                "human_replies": m.get("human_replies"),
+            }
     runtime.save_json("task_ledger.json", {"updated_at": now, "tasks": tasks})
 
+    # 停滞検知は従来どおり #a027 のみ（挙動不変）
+    ch = runtime.CH_NICHIJI
+    msgs = ledger_msgs.get(ch) or []
     cands = observe.stall_scan(msgs, now, bot_user_ids=bots)
     if not cands:
         print("[SILENT] no stalls")
