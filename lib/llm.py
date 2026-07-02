@@ -13,8 +13,10 @@ from pathlib import Path
 MODEL_HAIKU = "claude-haiku-4-5"
 MODEL_OPUS = "claude-opus-4-8"  # 判断系（同期時のルール分類など低頻度）
 # 中枢（会話・振り分け）用＝ChatGPT サブスク経由の GPT（非公式 llm-openai-via-codex・追加課金なし）。
-# サブスク経路に gpt-5.5 は無い（2026-07 実機確認）＝最上位は gpt-5.4。auth は ~/.codex/auth.json。
-MODEL_GPT = "openai-codex/gpt-5.4"
+# 2026-07-02 アカウント切替(m-toda@null.inc・Plus)で gpt-5.5 が開放された（旧 Team アカウントは 5.4 まで）。
+# auth は ~/.codex/auth.json。モデル一覧はアカウント/プランで変わる＝不通時は gpt() が Haiku へ自動退避。
+MODEL_GPT = "openai-codex/gpt-5.5"
+GPT_LABEL = "GPT 5.5"  # 発言末尾のモデル表記用
 
 # 「この処理で実際に使ったモデル」の記録（発言末尾の（GPT 5.4）表記用・戸田要望 2026-07-02）。
 # listener はワーカー並列なので threading.local。各ハンドラの処理前に reset_used() すること。
@@ -153,7 +155,7 @@ def gpt(user: str, system: str | None = None, max_tokens: int = 450, timeout: in
     try:
         out = _gpt_raw(user, sys_prompt, timeout)
         if out:
-            _mark("GPT 5.4")
+            _mark(GPT_LABEL)
             return out
         raise RuntimeError("gpt empty response")
     except Exception as e:
