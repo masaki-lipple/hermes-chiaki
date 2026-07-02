@@ -40,7 +40,8 @@ def _compose(gap_min, now_ts) -> str:
         # 事実崩れ/へりくだり過ぎガード → 固定文（言い切り）へ
         ok = (f"{gap}分が経過" in body) or (f"{gap}分経過" in body)
         bad = any(w in body for w in ("もし", "あれば", "嬉し", "幸い", "ただけれ",
-                                      "週", "日前", "時間前", "昨日", "先週", "今週"))
+                                      "週", "日前", "時間前", "昨日", "先週", "今週",
+                                      "@"))  # 架空の宛名(@〜さん)混入は固定文へ（宛名は呼び側が付与）
         if not ok or bad:
             body = fb
         return _regulate(body)

@@ -12,6 +12,9 @@ from lib import observe, runtime, source  # noqa: E402
 
 
 def main():
+    if not runtime.is_jp_workday():
+        print("[SILENT] holiday/weekend")  # 祝日に停滞検知を出さない（cron は曜日しか知らない）
+        return
     ch = runtime.CH_NICHIJI
     now = runtime.now_ts()
     bots = {runtime.GCP_TASK_BOT}

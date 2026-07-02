@@ -23,7 +23,9 @@ def main():
     if not recent:
         print(json.dumps({"messages": []}))
         return
-    today = recent[-1]["datetime"][:10]
+    # 「当日」は実際の現在JST日付（最終投稿の日付だと週末明けに過去日を再収集する）
+    import datetime as dt
+    today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
     msgs = [m for m in recent if m["datetime"][:10] == today and (args.since is None or m["ts_float"] > args.since)]
     # 報告本文だけ（chiaki/bot 等は対象外。ここでは投稿者を絞らずそのまま渡し、agent が判断）
     out = [{"ts": m["ts"], "datetime": m["datetime"], "text": m["text"]} for m in msgs]

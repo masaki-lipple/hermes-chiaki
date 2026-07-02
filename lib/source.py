@@ -36,7 +36,7 @@ def _norm_api(m: dict) -> dict:
         "user_name": (m.get("user_profile") or {}).get("real_name", ""),
         "text": m.get("text", ""),
         "thread_replies": (m.get("reply_count") if m.get("reply_count") else None),
-        "thread_latest": None,
+        "thread_latest": m.get("latest_reply"),  # スレッド最新返信の ts（新着返信の検知用）
         "has_files": bool(m.get("files")),
     }
 
@@ -141,7 +141,9 @@ def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 20
         params["oldest"] = f"{oldest_ts:.6f}"
     if not paginate:
         res = _api_get("conversations.history", params)
-        msgs = [_norm_api(m) for m in res.get("messages", []) if m.get("subtype") is None or m.get("text")]
+        # ファイルのみ投稿(subtype=file_share・text空)も活動として拾う＝直後の silence 誤爆を防ぐ（監査確定）
+        msgs = [_norm_api(m) for m in res.get("messages", [])
+                if m.get("subtype") is None or m.get("text") or m.get("files")]
         return sorted(msgs, key=lambda x: x["ts_float"])
     out, cursor, pages = [], None, 0
     while pages < max_pages:
@@ -153,7 +155,8 @@ def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 20
         except Exception as e:
             print(f"[source] read_recent paginate stopped at page {pages}: {e}")
             break
-        out += [_norm_api(m) for m in res.get("messages", []) if m.get("subtype") is None or m.get("text")]
+        out += [_norm_api(m) for m in res.get("messages", [])
+                if m.get("subtype") is None or m.get("text") or m.get("files")]
         cursor = (res.get("response_metadata") or {}).get("next_cursor")
         pages += 1
         if not res.get("has_more") or not cursor:

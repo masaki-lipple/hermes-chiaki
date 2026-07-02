@@ -26,7 +26,7 @@ MENTION = f"<@{runtime.CHIAKI_SELF}>"
 WATCH_EXTRA = (runtime.CH_YU_PDCA, runtime.CH_NICHIJI)  # #5035/#a027（@メンションはどこでも受ける）
 ISSUE_KINDS = {"バグ", "変更", "新機能", "その他"}
 RULE_KINDS = {"用語", "レギュレーション", "スタイル"}
-INTAKE_TIMEOUT_SEC = 24 * 3600  # 確認が来ない案は24hで失効
+INTAKE_TIMEOUT_SEC = 7 * 24 * 3600  # 確認が来ない案は7日で失効（24hだと金曜起票→月曜返信が無音で死ぬ＝監査確定）
 _PROPOSE_CAP = 4               # 再提示の上限（堂々巡り防止）
 _GO = {"go", "ok", "okです", "おk", "おけ", "ｏｋ", "了解", "了解です", "りょうかい", "承認", "承知",
        "承知しました", "いいね", "いいよ", "はい", "おねがいします", "お願いします", "それで",
@@ -158,8 +158,20 @@ def _propose_text(proposals: list) -> str:
             "どう直すのがいいか、もう少し具体的に教えてもらえますか？")
 
 
+# 本文中のメンションは中和する＝宛先pingはヘッダの <@戸田> だけ（監査確定：_answer がスレッドから
+# 実IDをコピーして第三者へ意図しないping／Haikuが架空の@名前を作る）。既知IDは呼び名に置換。
+_KNOWN_NAMES = {runtime.TODA: "戸田さん", "U09T44VEZM1": "松永さん", runtime.CHIAKI_SELF: "Chiaki AI"}
+
+
+def _neutralize_mentions(s: str) -> str:
+    s = re.sub(r"<@([A-Z0-9]+)(?:\|[^>]*)?>", lambda mm: _KNOWN_NAMES.get(mm.group(1), ""), s)
+    s = re.sub(r"<!(?:channel|here|everyone)>", "", s)  # broadcast の巻き添えpingも防ぐ
+    s = re.sub(r"(?<!\S)@(?=[^\s<>])", "", s)  # 裸の@名前は@だけ落とす（本文は残す）
+    return s
+
+
 def _reply(ch: str, root: str, body: str, url: str = "") -> None:
-    b = runtime.ensure_punct(observe.enforce_regulations(body))
+    b = runtime.ensure_punct(observe.enforce_regulations(_neutralize_mentions(body)))
     if url:
         b += f"\n{url}"
     source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{b}")
@@ -246,9 +258,13 @@ def _revise(text: str, instruction: str = "") -> str:
     out = (llm.haiku(prompt, max_tokens=400) or "").strip()
     if not out or out == text:
         return ""
-    if reflow:  # 行数は変わってよいが、本文（空白以外）が大きく欠落していないこと
+    # 数字の捏造・改変ガード：原文にも指示にも無い数字が出力に現れたら不採用（監査確定：
+    # 行数/長さのガードだけでは件数・時刻の書き換えが chat.update で既存投稿に焼き込まれる）。
+    if set(re.findall(r"\d+", out)) - set(re.findall(r"\d+", text + instruction)):
+        return ""
+    if reflow:  # 行数は変わってよいが、本文（空白以外）の欠落・水増し（前置き混入）がないこと
         a, b = re.sub(r"\s", "", out), re.sub(r"\s", "", text)
-        return out if (a and len(a) >= len(b) * 0.8) else ""
+        return out if (a and len(b) * 0.8 <= len(a) <= len(b) * 1.15) else ""
     return out if out.count("\n") == n else ""
 
 
@@ -334,18 +350,24 @@ def _candidates(cur: dict, items: dict):
                     cand.append((r, m["ts"], mgmt, ""))
     since_p = float(cur.get(pdca, 0.0))
     for m in source.read_recent(pdca, limit=50):
+        # #5902 の戸田さん top-level も窓口（監査確定：スレッド返信しか見ておらず@メンションが無視されていた）
+        if m["user_id"] == runtime.TODA and m["ts_float"] > since_p:
+            cand.append((m, m["ts"], pdca, ""))
         if m.get("thread_replies"):
             for r in source.read_thread(pdca, m["ts"]):
                 if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_p:
                     cand.append((r, m["ts"], pdca, ""))
-    # #5035/#a027：@メンション（どこでも）＋ 確認待ちスレッドの戸田返信のみ（負荷を抑えて拾う）
+    # #5035/#a027：@メンション（どこでも）＋ 確認待ちスレッドの戸田返信（負荷を抑えて拾う）。
+    # 新着返信のあるスレッド(thread_latest>since)も走査＝根が松永さん/botのスレッド内@メンションを
+    # 黙殺しない（監査確定：「どこでも1窓口」の破れ）。拾う返信は従来どおり戸田さん＋MENTION限定。
     for ch in WATCH_EXTRA:
         since = float(cur.get(ch, 0.0))
         for m in source.read_recent(ch, limit=50):
             if (m["user_id"] == runtime.TODA and m["ts_float"] > since and MENTION in (m.get("text") or "")):
                 cand.append((m, m["ts"], ch, ""))
             scan = (m.get("thread_replies") and
-                    (m.get("user_id") == runtime.CHIAKI_SELF or (ch, m["ts"]) in awaiting))
+                    (m.get("user_id") == runtime.CHIAKI_SELF or (ch, m["ts"]) in awaiting
+                     or float(m.get("thread_latest") or 0) > since))
             if scan:
                 for r in source.read_thread(ch, m["ts"]):
                     if (r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since
@@ -369,6 +391,11 @@ def _expire_stale(items: dict) -> None:
     for it in items.values():
         if it.get("status") == "awaiting_confirm" and now - float(it.get("proposed_at", now)) > INTAKE_TIMEOUT_SEC:
             it["status"] = "expired"
+            try:  # 無音で消さない＝1回だけ知らせる（失効は片道なので二重通知しない）
+                _reply(it.get("channel"), it.get("thread_root"),
+                       "時間が空いたので、この確認はいったん閉じますね。必要でしたら、もう一度メンションしてください。")
+            except Exception as e:
+                print(f"[intake] expire notice failed: {e}")
 
 
 def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
@@ -444,7 +471,15 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
 
 
 def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
+    """確認ターン。last_seen_ts / proposed_at は正常終了時にだけ前進＝途中例外（LLM残高切れ等）で
+    戸田さんの返信が恒久に握りつぶされない（監査確定バグ）。対話が続く限りタイムアウトもリセット。"""
+    acted = _confirm_inner(it, m, ch, root)
     it["last_seen_ts"] = m["ts"]
+    it["proposed_at"] = runtime.now_ts()
+    return acted
+
+
+def _confirm_inner(it: dict, m: dict, ch: str, root: str) -> int:
     v = _verdict(m["text"])
     proposals = it.get("proposals") or ([it["proposal"]] if it.get("proposal") else [])
     bills = [p for p in proposals if p.get("type") in ("issue", "rule")]

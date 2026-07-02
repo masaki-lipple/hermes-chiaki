@@ -6,14 +6,21 @@ cron: 0 9-19 * * 1-5（--no-agent --script propose.py）。新規が無ければ
 """
 import json
 import os
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
 from lib import runtime, source, observe  # noqa: E402
 
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
-KINDS = ("notation", "typo", "stall")
+# stall は提案フローに乗せない（監査確定バグ：対象スレッド・対象者が無く GO しても実行不能＝
+# pending がゾンビ化していた。停滞の控えは stall-scan 自身が #8902 に投稿済み。チームへの促し
+# 機能を本配線するかは戸田さん判断＝それまで stall finding は提案せず consumed にする）。
+KINDS = ("notation", "typo")
 KINDJP = {"notation": "表記", "typo": "誤字", "stall": "停滞"}
+# 生成文の行頭/空白直後の裸 @名前 は架空メンション（apply-ruling と同じガード。
+# プレビュー＝GO時にそのまま投稿される文面なので、ここで無害化しておく）。
+_FAKE_MENTION = re.compile(r"(?<!\S)@(?=[^\s<>])")
 # 監視チャンネル → (user_id, 表示名)。apply-ruling は user_id で本物の @メンション、
 # 提案プレビューは表示名を太字（承認前に対象者へ通知を飛ばさない）。
 CH_TARGET = {"C09U4T1BBU0": ("U09T44VEZM1", "Yu Matsunaga")}
@@ -66,12 +73,16 @@ def _draft(f: dict, rules: dict) -> str:
                   f"最後に『修正したらメンションで報告ください。』の主旨を必ず一文添える。"
                   f"宛名(@)は付けず本文だけ・全体2〜3文。" + shot)
         # 注: 提案文は誤例「sns」等を説明上わざと含むので、ここでは自己チェック(apply_notation_fixes)を掛けない。
-        return llm.haiku(prompt) or base
+        # 架空の @名前 だけ無害化（GO 時にこの draft がそのまま #5035 へ投稿されるため）。
+        return _FAKE_MENTION.sub("", (llm.haiku(prompt) or base).strip()) or base
     except Exception:
         return base
 
 
 def main():
+    if not runtime.is_jp_workday():
+        print("[SILENT] holiday/weekend")  # 祝日に戸田さんへ提案pingしない（cronは曜日しか知らない）
+        return
     findings = runtime.read_jsonl("findings.jsonl")
     if not findings:
         print("[propose] no findings")
@@ -80,7 +91,12 @@ def main():
     pending = runtime.load_json("pending_approvals.json", {"items": {}})
     posted = 0
     for f in findings:
-        if f.get("status") != "new" or f.get("kind") not in KINDS:
+        if f.get("status") != "new":
+            continue
+        if f.get("kind") == "stall":
+            f["status"] = "noted"  # 停滞は stall-scan の #8902 控えで可視化済み＝提案フローに乗せない
+            continue
+        if f.get("kind") not in KINDS:
             continue
         draft = _draft(f, rules)
         iss = f.get("issue", {}) or {}
@@ -113,11 +129,21 @@ def main():
             posted += 1
         else:
             print(f"[propose] post failed, leave status=new: kind={f['kind']} ch={f.get('channel')}")
+    changed = posted or any(f.get("status") == "noted" for f in findings)
     if posted:
-        with open(runtime.STATE_DIR / "findings.jsonl", "w", encoding="utf-8") as fh:
-            for r in findings:
+        runtime.save_json("pending_approvals.json", pending)  # pending を先に＝提案がGO不能になる黒穴を作らない
+    if changed:
+        # 書き戻し直前に再読込し、実行中に他スキル(obs-batch/stall-scan)が追記した行を温存（監査確定バグ：
+        # 同時刻cronのappendを全書き戻しで物理消去していた）。temp+replaceでアトミックに。
+        current = runtime.read_jsonl("findings.jsonl")
+        seen = {(r.get("ts"), r.get("kind"), r.get("msg_ts")) for r in findings}
+        extra = [r for r in current if (r.get("ts"), r.get("kind"), r.get("msg_ts")) not in seen]
+        p = runtime.STATE_DIR / "findings.jsonl"
+        tmp = p.with_name(p.name + f".{os.getpid()}.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for r in findings + extra:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-        runtime.save_json("pending_approvals.json", pending)
+        os.replace(tmp, p)
     print(f"[propose] posted={posted}")
 
 

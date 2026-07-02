@@ -35,23 +35,28 @@ def _known(rules):
 
 def _gather(ch, since, bots):
     """当日・since 以降の新着（投稿元＋スレッド返信、bot/空文除外）。(messages, new_cursor)。"""
+    import datetime as dt
     recent = source.read_recent(ch, oldest_ts=since or None, limit=200)
     if not recent:
         return [], since
-    today = recent[-1]["datetime"][:10]
-    msgs, maxts = [], (since or 0.0)
+    # 「当日」は実際の現在JST日付（チャンネル最終投稿の日付だと、週末明けに過去日の投稿を再検査する＝監査確定）
+    today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+    msgs, maxts, seen = [], (since or 0.0), set()
     for m in recent:
         if m["datetime"][:10] != today:
             continue
         if m["ts_float"] > (since or 0) and m["user_id"] not in bots and m["text"].strip():
             msgs.append(m)
+            seen.add(m["ts"])
         maxts = max(maxts, m["ts_float"])
         if m.get("thread_replies"):
             for r in source.read_thread(ch, m["ts"]):
-                if r["ts"] == m["ts"] or r["ts_float"] <= (since or 0) or r["user_id"] in bots:
+                # thread_broadcast は履歴とスレッドの両方に現れる＝ts で二重取り込みを防ぐ（監査確定）
+                if r["ts"] in seen or r["ts"] == m["ts"] or r["ts_float"] <= (since or 0) or r["user_id"] in bots:
                     continue
                 if r["text"].strip():
                     msgs.append(r)
+                    seen.add(r["ts"])
                 maxts = max(maxts, r["ts_float"])
     return msgs, maxts
 
@@ -99,6 +104,11 @@ def main():
                 if not (0 <= i < len(msgs)) or not found or not suggest or found == suggest:
                     continue
                 msg = msgs[i]
+                # Haiku の found が対象投稿に実在しない＝幻覚 or 行番号取り違え → 捨てる（監査確定 high：
+                # 実在しない検知は #8902 提案が事実と不一致になり、GO 後に「本文に無い＝修正済み」と
+                # 誤判定されて催促直後に偽の完了お礼・完了通知まで連鎖する）。
+                if found not in msg["text"]:
+                    continue
                 # 辞書層(notation_check)と重複する found はスキップ（二重提案防止）
                 if any(iss.get("found") == found for iss in observe.notation_check(msg["text"], rules)):
                     continue

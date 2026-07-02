@@ -86,6 +86,17 @@ def _morning_text() -> str:
             "本日もよろしくおねがいします！")
 
 
+def _fallback_lines(mode: str, d: dict) -> str:
+    """Haiku 不通（残高切れ・障害）でも PDCA を止めない決定論3行（数字は digest から機械的に）。
+    2026-06-29 の残高切れで毎時報告が無言停止した反省＝生成が死んでも固定文で継続する。"""
+    if mode == "progress":
+        det = f"表記{d['notation']}・誤字{d['typo']}・停滞{d['stall']}、反映{d['go']}・却下{d['reject']}・修正完了{d['completed']}です。"
+        return (f"松永さんからの報告{d['reports']}件を確認しました。\n{det}\n引き続き、観測を続けます。")
+    det = (f"実測{d['actuals']}件・未突合{d['unmatched']}件、表記{d['notation']}・誤字{d['typo']}・停滞{d['stall']}、"
+           f"反映{d['go']}・却下{d['reject']}・修正完了{d['completed']}・未対応{d['open']}件です。")
+    return (f"本日の観測を終了します。\n{det}\n明日も観測を続けます。")
+
+
 def _compose(mode: str, date: str, since: float):
     from lib import llm
     if mode == "morning":
@@ -115,10 +126,11 @@ def _compose(mode: str, date: str, since: float):
     try:
         body = llm.haiku(prompt, max_tokens=300)
     except Exception as e:
-        print(f"[chiaki-pdca] haiku failed: {e}")
-        return None
+        print(f"[chiaki-pdca] haiku failed: {e} -> deterministic fallback")
+        body = None
     if not body:
-        return None
+        # Haiku 不通でも黙らない＝決定論の3行で継続（enforce は下の共通経路で掛かる）
+        body = _fallback_lines(mode, d).replace("\n", "|||")
     # 区切り(|||/||/|/｜・前後スペース・改行)を全て改行に正規化＝3分割の成否に依存せず、生パイプを絶対に投稿しない。
     norm = re.sub(r"[ \t　]*[|｜]+[ \t　]*", "\n", body.strip())
     parts = [ln.strip() for ln in norm.split("\n") if ln.strip()]
@@ -135,6 +147,9 @@ def _compose(mode: str, date: str, since: float):
 
 
 def main():
+    if not runtime.is_jp_workday():
+        print("[SILENT] holiday/weekend")  # 祝日に #5902 へ @channel を投げない（cron は曜日しか知らない）
+        return
     now = _now()
     date = now.strftime("%Y-%m-%d")
     mode = _mode(now.hour)

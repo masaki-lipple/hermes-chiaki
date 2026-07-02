@@ -26,8 +26,14 @@ def main():
     if not recent:
         print("[SILENT] no messages")
         return
-    today = recent[-1]["datetime"][:10]
+    # 「当日」は実際の現在JST日付（最終投稿の日付だと、週末明けの朝に金曜分を再処理して
+    # 週末・過去日の投稿へ表記提案を出す等の誤爆＝監査確定。silence と同じ方針）。
+    import datetime as dt
+    today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
     today_msgs = [m for m in recent if m["datetime"][:10] == today]
+    if not today_msgs:
+        print("[SILENT] no messages today")
+        return
 
     # 予定工数
     sched = next((observe.parse_schedule(m["text"]) for m in today_msgs
@@ -60,8 +66,13 @@ def main():
     n_notation = 0
     max_seen = last_processed
 
+    scanned = set()  # thread_broadcast は履歴とスレッドの両方に現れる＝二重検査で同じ提案が2通になるのを防ぐ（監査確定）
+
     def _scan(msg):
         nonlocal n_notation
+        if msg["ts"] in scanned:
+            return
+        scanned.add(msg["ts"])
         for issue in observe.notation_check(msg["text"], rules):
             n_notation += 1
             if policy.get("quality_nudges_require_approval", True):

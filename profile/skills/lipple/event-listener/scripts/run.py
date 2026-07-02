@@ -120,12 +120,15 @@ def main():
         if ev.get("user") == runtime.CHIAKI_SELF:
             return
         ch, tts, user = ev.get("channel"), ev.get("thread_ts"), ev.get("user")
-        # 何をするか先に決め、actionable な時だけ event_id で重複排除（message/app_mention の二重も吸収）
+        # 何をするか先に決め、actionable な時だけ event_id で重複排除（message/app_mention の二重も吸収）。
+        # 戸田さんの明示的な @メンションは intake 最優先（監査確定：促しスレッド内の @メンションが
+        # _is_relevant で apply-ruling に回り黙殺されていた）。メンション無しの裁定返信は従来どおり apply。
         action = None
-        if _is_relevant(ch, tts):
+        if user == runtime.TODA and etype == "app_mention":
+            action = "intake"
+        elif _is_relevant(ch, tts):
             action = "apply"
-        elif user == runtime.TODA and (etype == "app_mention"
-                                       or ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)
+        elif user == runtime.TODA and (ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)
                                        or _is_intake_thread(ch, tts)):
             action = "intake"
         if not action:
