@@ -28,6 +28,23 @@ def main():
             if hr is not None:
                 m["human_replies"] = hr
 
+    # 30日窓のタスク根を毎回全再生成し、後続機能の共通台帳として保存する。
+    tasks = {}
+    for m in msgs:
+        parsed = observe.parse_biz_task(m["text"])
+        if not parsed:
+            continue
+        tasks[m["ts"]] = {
+            "task": parsed["task"],
+            "due": parsed["due"],
+            "assignees": parsed["assignees"],
+            "author": m["user_id"],
+            "datetime": m["datetime"],
+            "reactions": m.get("reactions", []),
+            "human_replies": m.get("human_replies"),
+        }
+    runtime.save_json("task_ledger.json", {"updated_at": now, "tasks": tasks})
+
     cands = observe.stall_scan(msgs, now, bot_user_ids=bots)
     if not cands:
         print("[SILENT] no stalls")
