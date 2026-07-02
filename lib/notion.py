@@ -76,11 +76,12 @@ def create_request(summary: str, detail: str, slack_url: str = "",
 
 def create_rule_registry(summary: str, detail: str, rule_kind: str, slack_url: str = "",
                          wrong: str = "", right: str = "", basis: str = "",
-                         target_agent: str = "chiaki", reporter: str = "chiaki",
+                         target_agent: str = "Chiaki AI", reporter: str = "Chiaki AI",
                          status: str = "未承認") -> str | None:
     """Rule（言葉のルール）を1件起票。作成ページ URL を返す（DRY/失敗時 None）。
     rule_kind ∈ 用語|レギュレーション|スタイル ／ status ∈ 承認(機械ルール)|未承認(判断ルール)|却下
-    ／ target_agent・reporter は live スキーマ準拠で小文字 chiaki。"""
+    ／ target_agent・reporter は「Chiaki AI」（2026-07-03 スキーマ整理済み。小文字 chiaki を送ると
+    Notion が stray オプションを自動再作成してしまうので使わない）。"""
     props = {
         "要約": {"title": [{"text": {"content": (summary or "（無題）").strip()[:200]}}]},
         "種別": {"select": {"name": rule_kind}},
