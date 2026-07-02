@@ -38,6 +38,8 @@ def _norm_api(m: dict) -> dict:
         "thread_replies": (m.get("reply_count") if m.get("reply_count") else None),
         "thread_latest": m.get("latest_reply"),  # スレッド最新返信の ts（新着返信の検知用）
         "has_files": bool(m.get("files")),
+        # リアクション名のリスト（例 ["memo","kanryo"]）＝#a027 の起票/完了スタンプ検知用（Phase0-1）
+        "reactions": [r.get("name", "") for r in (m.get("reactions") or [])],
     }
 
 

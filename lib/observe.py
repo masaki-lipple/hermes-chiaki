@@ -484,6 +484,9 @@ def silence_dry_run(messages: list[dict], threshold_sec: int = SILENCE_THRESHOLD
 # ── §3.8 タスク軸の停滞検知（業務チャンネル）──────────────
 _BIZ_TASK = re.compile(r"業務内容[：:]\s*(.+)")
 _BIZ_DUE = re.compile(r"対応期限[：:]\s*(\d{4})年(\d{1,2})月(\d{1,2})日")
+# 対応者：<@U…>（複数可・空欄あり）。促し(Phase2)の宛先の正＝タスク投稿自身のフィールド。
+_BIZ_ASSIGNEE = re.compile(r"対応者[：:]\s*((?:\s*<@[A-Z0-9]+>)*)")
+_MENTION_ID = re.compile(r"<@([A-Z0-9]+)>")
 
 
 def parse_biz_task(text: str) -> dict | None:
@@ -494,7 +497,11 @@ def parse_biz_task(text: str) -> dict | None:
     dm = _BIZ_DUE.search(text)
     if dm:
         due = f"{int(dm.group(1)):04d}-{int(dm.group(2)):02d}-{int(dm.group(3)):02d}"
-    return {"task": tm.group(1).strip(), "due": due}
+    assignees = []
+    am = _BIZ_ASSIGNEE.search(text)
+    if am:
+        assignees = _MENTION_ID.findall(am.group(1))
+    return {"task": tm.group(1).strip(), "due": due, "assignees": assignees}
 
 
 # GCP タスク同期 bot。§3.8: この bot 自身の投稿は「動き」に数えない（活動＝人間の反応のみ）。
