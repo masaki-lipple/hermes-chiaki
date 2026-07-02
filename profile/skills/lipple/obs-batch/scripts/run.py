@@ -57,8 +57,14 @@ def main():
     timers[ch] = t
 
     # 突合失敗（§3.7）— 新規分だけ findings に（確認は1回・上位で）
+    seen = runtime.load_json("reconcile_seen.json", {})
     for u in ev["unmatched"]:
-        runtime.record_finding("reconcile_fail", {"channel": ch, "detail": u})
+        key = f"{today}|{u.get('reason', '')}|{u.get('core', '')}|{u.get('datetime', '')}"
+        if key not in seen:
+            runtime.record_finding("reconcile_fail", {"channel": ch, "detail": u})
+            seen[key] = now
+    seen = {k: v for k, v in seen.items() if now - float(v or 0) < 7 * 86400}  # 古い記録を掃除
+    runtime.save_json("reconcile_seen.json", seen)
 
     # 表記 Layer1（新着のみ・投稿元＋スレッド返信。bot/chiaki は対象外）
     rules = _load_rules()
