@@ -354,12 +354,20 @@ def _candidates(cur: dict, items: dict):
     open_threads = {ts for ts, it in pend.items() if it.get("status") in ("pending", "awaiting_completion")}
     awaiting = {(it.get("channel"), it.get("thread_root")) for it in items.values()
                 if it.get("status") == "awaiting_confirm"}
+    # 戸田さん以外からの @Chiaki AI ＝エスカレーション対象（権限は戸田さんのみ・2026-07-02）。
+    # ただし促し等の pending 対象スレッド内は apply-ruling の完了報告フローなので拾わない。
+    pend_src = {(it.get("source_channel"), it.get("source_ts")) for it in pend.values()}
+
+    def _other(uid):
+        return uid and uid not in (runtime.TODA, runtime.CHIAKI_SELF, runtime.GCP_TASK_BOT)
     cand = []
     # #8902/#5902：戸田さんの全投稿（top-level＋提案以外スレッド返信）
     since_m = float(cur.get(mgmt, 0.0))
     for m in source.read_recent(mgmt, limit=50):
         if m["user_id"] == runtime.TODA and m["ts_float"] > since_m:
             cand.append((m, m["ts"], mgmt, ""))
+        elif _other(m["user_id"]) and m["ts_float"] > since_m and MENTION in (m.get("text") or ""):
+            cand.append((m, m["ts"], mgmt, "escalate"))
         if m.get("thread_replies") and m["ts"] not in open_threads:
             for r in source.read_thread(mgmt, m["ts"]):
                 if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_m:
@@ -369,6 +377,8 @@ def _candidates(cur: dict, items: dict):
         # #5902 の戸田さん top-level も窓口（監査確定：スレッド返信しか見ておらず@メンションが無視されていた）
         if m["user_id"] == runtime.TODA and m["ts_float"] > since_p:
             cand.append((m, m["ts"], pdca, ""))
+        elif _other(m["user_id"]) and m["ts_float"] > since_p and MENTION in (m.get("text") or ""):
+            cand.append((m, m["ts"], pdca, "escalate"))
         if m.get("thread_replies"):
             for r in source.read_thread(pdca, m["ts"]):
                 if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_p:
@@ -381,14 +391,22 @@ def _candidates(cur: dict, items: dict):
         for m in source.read_recent(ch, limit=50):
             if (m["user_id"] == runtime.TODA and m["ts_float"] > since and MENTION in (m.get("text") or "")):
                 cand.append((m, m["ts"], ch, ""))
+            elif (_other(m["user_id"]) and m["ts_float"] > since and MENTION in (m.get("text") or "")
+                  and (ch, m["ts"]) not in pend_src):
+                cand.append((m, m["ts"], ch, "escalate"))
             scan = (m.get("thread_replies") and
                     (m.get("user_id") == runtime.CHIAKI_SELF or (ch, m["ts"]) in awaiting
                      or float(m.get("thread_latest") or 0) > since))
             if scan:
                 for r in source.read_thread(ch, m["ts"]):
-                    if (r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since
+                    if r["ts"] == m["ts"] or r["ts_float"] <= since:
+                        continue
+                    if (r["user_id"] == runtime.TODA
                             and (MENTION in (r.get("text") or "") or (ch, m["ts"]) in awaiting)):
                         cand.append((r, m["ts"], ch, ""))
+                    elif (_other(r["user_id"]) and MENTION in (r.get("text") or "")
+                          and (ch, m["ts"]) not in pend_src):
+                        cand.append((r, m["ts"], ch, "escalate"))
     return cand
 
 
@@ -474,6 +492,19 @@ def _bug_symptom(instruction: str, ch: str, root: str, raw: str):
 def _mark_done(items: dict, m: dict, ch: str, root: str) -> int:
     """item を作らない経路(edit/question)でも『処理済み』印を残す＝再処理時に二重投稿しない。"""
     items[m["ts"]] = {"status": "handled", "channel": ch, "thread_root": root, "mention_ts": m["ts"]}
+    return 1
+
+
+def _escalate(items: dict, m: dict, ch: str, root: str) -> int:
+    """戸田さん以外からの @Chiaki AI への依頼＝分類・起票・実行はせず、依頼者に受領を返して
+    戸田さんへメンションで引き継ぐ（権限は戸田さんのみ・2026-07-02 戸田指示）。固定文＝決定論。"""
+    sender = m.get("user_id", "")
+    body = (f"<@{sender}>\n"
+            "ご連絡ありがとうございます！Chiaki AIへの依頼や変更は、戸田さんに確認をとる決まりになっています。\n"
+            f"<@{runtime.TODA}> 上記の依頼の確認をお願いします！")
+    source.post_thread_reply(ch, root, body)
+    _log("escalate", ch, root, m, 依頼者=sender)
+    items[m["ts"]] = {"status": "escalated", "channel": ch, "thread_root": root, "mention_ts": m["ts"]}
     return 1
 
 
@@ -591,7 +622,18 @@ def _confirm_inner(it: dict, m: dict, ch: str, root: str) -> int:
         it["status"] = "cancelled"
         _reply(ch, root, _EDIT_MSG[st])
         return 1
-    # どの分類にも落ちなかった（question/none/空）＝無返信を防ぐ。awaiting は維持して次の返信を待つ。
+    # 確認ターン中の質問には普通に答える＝紋切り型の「うまく汲み取れませんでした」で会話を断ち切らない
+    # （2026-07-02 戸田「イシューではなくここで実装できる？」への紋切り返しが「こういう会話になっちゃう」）。
+    # awaiting は維持＝回答後も GO・却下・文面修正を受け付ける。
+    if cs2 and cs2[0].get("type") == "question":
+        ans = _answer(m["text"], ch, root)
+        if ans:
+            _reply(ch, root, ans + "\nこの提案は開いたままなので、GO・却下・文面修正はいつでもどうぞ。")
+            return 1
+    if cs2 and cs2[0].get("type") == "none":
+        _reply(ch, root, _smalltalk(m["text"]))
+        return 1
+    # どの分類にも落ちなかった（空・回答失敗）＝無返信を防ぐ。awaiting は維持して次の返信を待つ。
     it["propose_count"] = it.get("propose_count", 1) + 1
     _reply(ch, root, "うまく汲み取れませんでした。「これでOK」か「却下」、または直したい内容を具体的に教えてもらえますか？")
     return 1
@@ -624,7 +666,11 @@ def main():
             pass
         it = _find_awaiting(items, ch, root, m["ts"])
         try:
-            acted += _handle_confirm(it, m, ch, root) if it else _handle_propose(m, ch, root, items)
+            if _hint == "escalate" or m.get("user_id") != runtime.TODA:
+                # 戸田さん以外＝分類・実行せず戸田さんへ引き継ぎ（冪等：処理済みtsは再送しない）
+                acted += 0 if m["ts"] in items else _escalate(items, m, ch, root)
+            else:
+                acted += _handle_confirm(it, m, ch, root) if it else _handle_propose(m, ch, root, items)
             if ch not in failed:
                 maxts[ch] = m["ts_float"]  # 連続成功プレフィックスの高水位だけ前進
         except Exception as e:

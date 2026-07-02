@@ -131,6 +131,9 @@ def main():
         elif user == runtime.TODA and (ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)
                                        or _is_intake_thread(ch, tts)):
             action = "intake"
+        elif etype == "app_mention" and user:
+            # 戸田さん以外の @Chiaki AI ＝ intake がエスカレーション（受領＋戸田さんへ引き継ぎ）で処理
+            action = "intake"
         if not action:
             return
         # ch:ts で統一＝同一発話の message と app_mention は同一鍵で1回に畳む（event_id は両者で別＝素通りする）
