@@ -117,8 +117,16 @@ def build(token: str = None, yougo_rows: list = None, reg_rows: list = None) -> 
         for i, w in enumerate(wrongs):
             right = rights[i] if i < len(rights) else (rights[0] if rights else "")
             style_rules.append({"rule": rule, "wrong": w, "right": right})
+    style_rules += _BUILTIN_STYLE  # 検知用の builtin（1文字ルールは Notion 誤例/正例に頼らずコードで持つ）
     return {"_source": "Notion 用語辞書_DB + レギュレーション_DB (sync_notation.py)",
             "terms": terms, "acronyms": ACRONYMS, "style_rules": style_rules}
+
+
+# 検知用 builtin style_rule（notation_check が松永さんの投稿から拾う。notation_check は URL/<...>/コードを
+# マスク済み＝`<!channel>` 内の ! や URL 内の ! は拾わない。プローズの半角 ! だけ「！」を提案）。
+_BUILTIN_STYLE = [
+    {"rule": "びっくりマークは全角「！」に統一（社内コミュニケーション）", "wrong": "!", "right": "！"},
+]
 
 
 # ── 新 regulations.json（決定論強制レイヤー） ──────────────────
@@ -126,6 +134,10 @@ def build(token: str = None, yougo_rows: list = None, reg_rows: list = None) -> 
 _BUILTIN_REGEX = [
     {"id": "fullwidth-bang", "description": "全角！を半角！に", "pattern": "！", "replace": "!",
      "scope": ["記事・コンテンツ"], "kind": "Lipple"},
+    # chiaki 自身の社内出力は半角 ! を全角 ！ に（戸田レギュレーション 2026-07-02）。記事の ！→! とは
+    # シーンで分離。enforce は URL/<!channel>/<@U…>/コード/「」引用をマスク後に置換するので巻き込まない。
+    {"id": "halfwidth-bang", "description": "半角!を全角！に", "pattern": "!", "replace": "！",
+     "scope": ["社内コミュニケーション"], "kind": "Lipple"},
     {"id": "double-space", "description": "二重スペースを単一に", "pattern": "  +", "replace": " ",
      "scope": ["記事・コンテンツ"], "kind": "Lipple"},
 ]
