@@ -43,6 +43,7 @@ def main():
 
     # 実測・予実
     ev = observe.extract_task_events(today_msgs)
+    observe.refine_actual_kinds(ev["actuals"], today_msgs)  # kind2=「種別（対象）」
     # actuals は当日分を毎回再生成（冪等）
     runtime.save_json(f"actuals_{today}.json",
                       {"date": today, "actuals": ev["actuals"], "unmatched": ev["unmatched"]})

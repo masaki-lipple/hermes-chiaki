@@ -169,6 +169,68 @@ def extract_task_events(messages: list[dict]) -> dict:
     return {"actuals": sorted(actuals, key=lambda a: a["start_ts"]), "unmatched": unmatched}
 
 
+# ── 種別の細分化（「種別（対象）」表記・2026-07-03 戸田決定） ────────
+_PROG_RE = re.compile(r"^(?:業務を中断し、)?(.+?)を進めています")
+_KIND2_FIX = (
+    ("文言", ("タイトル", "文言", "誤字", "見出し")),
+    ("固定ページ", ("固定ページ", "店舗一覧", "店舗固定", "トップページ")),
+    ("求人ページ", ("求人",)),
+    ("コンテンツページ", ("コンテンツ", "記事", "インタビュー", "コラム", "吹き出し", "赤文字")),
+)
+_KIND2_NAGASHI = (
+    ("求人ページ", ("求人",)),
+    ("商品ページ", ("商品",)),
+    ("コンテンツ", ("コンテンツ", "記事", "インタビュー", "コラム", "原稿", "座談会")),
+)
+
+
+def _kind2_pick(rules: tuple, texts: list) -> str | None:
+    for label, kws in rules:
+        if any(kw in t for t in texts for kw in kws):
+            return label
+    return None
+
+
+def refine_actual_kinds(actuals: list[dict], messages: list[dict]) -> None:
+    """actuals へ kind2=「種別（対象）」を in-place 付与（対象を特定できなければ付けない）。
+    証拠の優先順: 修正=①core自身 ②同案件の開始/終了/進捗投稿 ③開始前の指示（type=other・案件名含む）
+    ／流し込み=①core ③指示 ②自投稿。流し込みの開始/終了投稿は全件が
+    「コンテンツの流し込みを行います」の定型文で対象を判別できないため、指示を先に見る。
+    メモ・雑談（type=other で案件名なし）は証拠に使わない＝週次タスクメモ等の誤マッチ防止。"""
+    evs = []
+    for m in sorted(messages, key=lambda x: x["ts_float"]):
+        ev = classify_event(m["text"]) or {}
+        typ, core = ev.get("type"), ev.get("core")
+        if typ == "other":
+            pm = _PROG_RE.match(_headline(m["text"]))
+            if pm:
+                typ, core = "progress", pm.group(1).strip()
+        evs.append((typ, core or "", m["text"], m["ts_float"]))
+
+    for a in actuals:
+        core = a.get("core") or ""
+        if "修正" in core:
+            rules, base, order = _KIND2_FIX, "修正", ("core", "own", "instr")
+        elif "流し込み" in core:
+            rules, base, order = _KIND2_NAGASHI, "流し込み", ("core", "instr", "own")
+        else:
+            continue
+        name = a.get("base_name") or ""
+        own = [t for typ, c, t, ts in evs
+               if typ in ("start", "end", "progress")
+               and (c == core or (len(name) >= 3 and name in c))
+               and a["start_ts"] - 60 <= ts <= a["end_ts"] + 60]
+        instr = [t for typ, c, t, ts in evs
+                 if typ == "other" and len(name) >= 3 and name in t
+                 and a["start_ts"] - 86400 <= ts <= a["start_ts"] + 300]
+        texts = {"core": [core], "own": own, "instr": instr}
+        for tier in order:
+            label = _kind2_pick(rules, texts[tier])
+            if label:
+                a["kind2"] = f"{base}（{label}）"
+                break
+
+
 def reconcile_with_plan(plan_blocks: list[dict], actuals: list[dict]) -> list[dict]:
     """§3.3 予定 vs 実測。案件基底名で突合し差分を出す。突合不能は plan/actual のみ。"""
     out = []
@@ -578,9 +640,9 @@ def compute_baselines(actuals: list[dict]) -> dict:
     by_pair: dict[tuple, list] = {}
     by_kind: dict[str, list] = {}
     for a in actuals:
-        key = (a["kind"] or "?", a["base_name"])
-        by_pair.setdefault(key, []).append(a)
-        by_kind.setdefault(a["kind"] or "?", []).append(a)
+        kind = a.get("kind2") or a.get("kind") or "?"
+        by_pair.setdefault((kind, a["base_name"]), []).append(a)
+        by_kind.setdefault(kind, []).append(a)
     return {
         "by_kind_x_case": {f"{k0}×{k1}": agg(v) for (k0, k1), v in sorted(by_pair.items())},
         "by_kind": {k: agg(v) for k, v in sorted(by_kind.items())},
