@@ -51,6 +51,21 @@ def _tail(text: str, limit: int = 700) -> str:
     return t if len(t) <= limit else "…" + t[-limit:]
 
 
+def _blank_before_bullets(text: str) -> str:
+    """本文行の直後に箇条書きが続く場合、Slack上で詰まらないよう空行を1つ入れる。"""
+    out: list[str] = []
+    in_fence = False
+    for line in (text or "").split("\n"):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        is_bullet = bool(re.match(r"^[ \t　]*(?:•|・|-)[ \t　]+\S", line))
+        prev_is_bullet = bool(out and re.match(r"^[ \t　]*(?:•|・|-)[ \t　]+\S", out[-1]))
+        if is_bullet and not in_fence and out and out[-1].strip() and not prev_is_bullet:
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
 def _brief(item: dict, prev_output: str = "") -> str:
     if item.get("continue_branch"):
         return (
@@ -83,6 +98,7 @@ def _brief(item: dict, prev_output: str = "") -> str:
 
 def _fmt(body: str) -> str:
     b = runtime.ensure_punct(observe.enforce_regulations(body))
+    b = _blank_before_bullets(b)
     try:
         from lib import llm
         tag = llm.last_used()
@@ -95,7 +111,7 @@ def _fmt(body: str) -> str:
 
 def _post(text: str) -> str:
     """top-level 投稿。返り値は投稿 ts（スレッド台帳のキー）。"""
-    r = source.post_message(CH, text)
+    r = source.post_message(CH, _blank_before_bullets(text))
     return (r or {}).get("ts") or ""
 
 
@@ -330,13 +346,13 @@ def main():
                 f"{_tail(res['output'])}{issue_line}")
 
     if cont and item.get("thread"):
-        source.post_thread_reply(CH, item["thread"], body)
+        source.post_thread_reply(CH, item["thread"], _blank_before_bullets(body))
         t = reg_items.get(item["thread"])
         if t is not None:
             t["last_output"] = _tail(res.get("output") or "", 900)
             t["last_seen_ts"] = runtime.now_ts()
     elif origin_thread:
-        source.post_thread_reply(CH, origin_thread, body)
+        source.post_thread_reply(CH, origin_thread, _blank_before_bullets(body))
         _register_thread(reg_items, origin_thread, item, branch, res)
     else:
         tts = _post(body)
