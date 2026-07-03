@@ -354,6 +354,14 @@ def main():
     elif origin_thread:
         source.post_thread_reply(CH, origin_thread, _blank_before_bullets(body))
         _register_thread(reg_items, origin_thread, item, branch, res)
+        if res["ok"] and res["changed"]:
+            # 完了（レビュー待ち）はトップレベルにも一覧用で改めて報告（2026-07-03 戸田
+            # 「進捗はその会話の中で、完了はトップレベルに改めて報告しよう」）。
+            # 対話は元スレッドで続けるため、この投稿は台帳に登録しない。
+            link = f"https://lipple.slack.com/archives/{CH}/p{origin_thread.replace('.', '')}"
+            _post(f"<@{runtime.TODA}>\n報告：Codex実装（レビュー待ち）\n内容：{summary}\n\n"
+                  f"会話スレッドで受けた依頼の実装が終わりました。ブランチは{branch}です。\n"
+                  f"詳細とやりとりは以下のスレッドにあります。\n{link}")
     else:
         tts = _post(body)
         _register_thread(reg_items, tts, item, branch, res)
