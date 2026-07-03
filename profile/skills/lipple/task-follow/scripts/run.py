@@ -94,7 +94,7 @@ def main():
     today = _today_jst(now)
     ledger = runtime.load_json("task_ledger.json", {}).get("tasks", {})
     sent = runtime.load_json("task_follow.json", {})
-    counts = {"A": 0, "skip_kanryo": 0, "read_error": 0}
+    counts = {"A": 0, "skip_kanryo": 0, "skip_interim": 0, "read_error": 0}
 
     for t in ledger.values():
         ch = t.get("channel")
@@ -118,6 +118,13 @@ def main():
         if not mentioned:
             continue
         report_date = (report.get("datetime") or "")[:10]
+        due = t.get("due") or ""
+        # 期限より前の報告＝月間などのメインタスクに積まれる途中経過の共有 → 確認催促の対象外
+        # （2026-07-03 戸田「メインタスクの報告そのものにはリマインドをしなくていい」。
+        #   催促するのはタスクそのものの完了報告＝期限当日以降の報告だけ）
+        if due and report_date and report_date < due:
+            counts["skip_interim"] += 1
+            continue
         if report_date and report_date < today and not _mentioned_replied_after(replies, mentioned, report):
             key = f"A:{ch}:{root_ts}:{report.get('ts')}"
             if key not in sent:
@@ -127,7 +134,7 @@ def main():
                 counts["A"] += 1
 
     runtime.save_json("task_follow.json", _cleanup_sent(sent, now))
-    print("[task-follow] A={A} skip_kanryo={skip_kanryo} read_error={read_error}".format(**counts))
+    print("[task-follow] A={A} skip_kanryo={skip_kanryo} skip_interim={skip_interim} read_error={read_error}".format(**counts))
 
 
 if __name__ == "__main__":
