@@ -217,8 +217,27 @@ def _ensure_mention(channel_id: str, text: str) -> str:
     return text
 
 
+def _blank_before_bullets(text: str) -> str:
+    """本文行の直後に箇条書きが続く場合、Slack上で詰まらないよう空行を1つ入れる。
+    投稿の出口（post_message/post_thread_reply/update_message）で全投稿に適用＝
+    手書き・どのスキル経由でも同じ整形が掛かる（2026-07-03 戸田「抜本的解消をしたい」。
+    スキル個別のテンプレ修正では手書き投稿で再発した）。コードフェンス内は触らない。"""
+    import re as _re
+    out: list[str] = []
+    in_fence = False
+    for line in (text or "").split("\n"):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        is_bullet = bool(_re.match(r"^[ \t　]*(?:•|・|-)[ \t　]+\S", line))
+        prev_is_bullet = bool(out and _re.match(r"^[ \t　]*(?:•|・|-)[ \t　]+\S", out[-1]))
+        if is_bullet and not in_fence and out and out[-1].strip() and not prev_is_bullet:
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
 def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
-    text = _ensure_mention(channel_id, text)
+    text = _blank_before_bullets(_ensure_mention(channel_id, text))
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id} thread={thread_ts}\n  {text}")
         return {"ok": True, "dry": True}
@@ -230,7 +249,7 @@ def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
 
 
 def post_message(channel_id: str, text: str) -> dict:
-    text = _ensure_mention(channel_id, text)
+    text = _blank_before_bullets(_ensure_mention(channel_id, text))
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id}\n  {text}")
         return {"ok": True, "dry": True}
@@ -243,7 +262,7 @@ def post_message(channel_id: str, text: str) -> dict:
 
 def update_message(channel_id: str, ts: str, text: str) -> dict:
     """自分(chiaki)の既存投稿を編集（chat.update）。学習内容を投稿に反映する用。"""
-    text = _ensure_mention(channel_id, text)
+    text = _blank_before_bullets(_ensure_mention(channel_id, text))
     if FIXTURES or not _TOKEN:
         print(f"[DRY update] ch={channel_id} ts={ts}\n  {text}")
         return {"ok": True, "dry": True}
