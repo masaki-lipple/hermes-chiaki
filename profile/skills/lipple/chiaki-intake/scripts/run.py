@@ -673,7 +673,140 @@ def _handle_go_extra(it: dict, m: dict, ch: str, root: str, filed_bills: list) -
     # none / unclear → 起票報告のみで完結
 
 
+def _confirm_agent(it: dict, m: dict, ch: str, root: str):
+    """確認ターンの会話エージェント（2026-07-03 戸田「会話の主導権をGPTに渡す」）。
+    GPT 5.5 にスレッド履歴・提案中の内容・修正報告の知識・アクション一覧を渡し、
+    返事とアクションを一括で決めさせる＝口はGPT。実行は決定論ゲートのまま＝手は決定論
+    （起票は保存済み/検証済みの提案のみ・投稿編集は _maybe_edit_root・Codex起動は
+    _maybe_enqueue_codex・権限/冪等性は従来どおり）。出力が壊れていたら None＝従来ロジックへ。"""
+    try:
+        from lib import llm
+    except Exception:
+        return None
+    proposals = it.get("proposals") or ([it["proposal"]] if it.get("proposal") else [])
+    bills = [p for p in proposals if p.get("type") in ("issue", "rule")]
+    thread = source.read_thread(ch, root)
+    convo = "\n".join(f"- {(x.get('user_name') or x.get('user_id') or '?')}: {(x.get('text') or '')[:250]}"
+                      for x in thread[-15:])
+    count = it.get("propose_count", 1)
+    plist = json.dumps([{k: p.get(k) for k in ("type", "issue_kind", "rule_kind", "要約", "詳細", "routine")}
+                        for p in bills], ensure_ascii=False) if bills else "（まだ案が定まっていない）"
+    prompt = (
+        "あなたは Chiaki AI（Lipple の業務観測AI）。#8902 で戸田さんと会話しながら、指摘の起票を進めています。\n"
+        f"提示中の起票案: {plist}\n"
+        f"再提示回数: {count}回目（4回を超えたら再提案せず、登録か見送りの判断を仰ぐ）\n"
+        f"このスレッドのやりとり:\n{convo}\n"
+        f"\n最近の修正報告（Chiaki AI 自身の不具合と直した内容の記録・新しい順）:\n{_fix_reports()}\n"
+        f"\n戸田さんの新しい返信: {m.get('text') or ''}\n\n"
+        "返事（reply）と、取るアクション（action）を決めて JSON のみで返す:\n"
+        '{"action": "file|revise|cancel|edit_post|answer_only", "reply": "", "proposals": [], "instruction": ""}\n'
+        "- file: 提示中の案の登録を承認した（OK/はい/登録して/Issueに追加で 等。追加の依頼や雑談が同居していても"
+        "承認が含まれていれば file）。reply には登録した旨＋同居していた話への応答（登録URLはシステムが後ろに付ける）。"
+        "返信に『新しく起票すべき別の指摘』が含まれる場合だけ proposals に次の案を入れる"
+        '（各: {"type":"issue|rule","issue_kind":"バグ|変更|新機能|その他","rule_kind":"用語|レギュレーション|スタイル",'
+        '"要約":"","詳細":"","routine":false}）。\n'
+        "- revise: 案の内容・振り分けの変更指示（『それRuleね』『要約はこうして』）。proposals に修正版の全件を入れ、"
+        "reply で新しい案の中身を具体的に示して確認を求める。\n"
+        "- cancel: 却下・見送り（『やめて』『いらない』）。\n"
+        "- edit_post: 特定の投稿そのものを直す依頼。instruction に直し方を具体的に。\n"
+        "- answer_only: 質問・雑談・情報共有＝起票の判断はまだ。reply で普通に答える/応じる（『なぜ』への質問は"
+        "上の修正報告の記録に基づいて『こういうバグでした・こう直しました』と答える。記録に無ければ正直に分からないと言う）。\n"
+        "reply の規約: です・ます調、感嘆符は全角！、太字や*は使わない、@メンションは書かない、絵文字なし、1〜5文で簡潔に。"
+        "「この提案は開いたままなので〜」のような案内の定型文は書かない。同じ文面を繰り返さない。"
+    )
+    llm.reset_used()
+    out = llm.gpt(prompt, max_tokens=800) or ""
+    mm = re.search(r"\{.*\}", out, re.S)
+    if not mm:
+        return None
+    try:
+        d = json.loads(mm.group(0))
+    except Exception:
+        return None
+    action = d.get("action")
+    reply = (d.get("reply") or "").strip()
+    if action not in ("file", "revise", "cancel", "edit_post", "answer_only") or not reply:
+        return None
+
+    if action == "cancel":
+        it["status"] = "cancelled"
+        _reply(ch, root, reply)
+        _log("cancelled", ch, root, m, 依頼元=(it.get("mention_text") or "")[:200])
+        return 1
+
+    if action == "answer_only":
+        _reply(ch, root, reply)  # awaiting は維持＝引き続き承認/修正/却下を受け付ける
+        _log("answer", ch, root, m, 回答=reply[:200])
+        return 1
+
+    if action == "edit_post":
+        st = _maybe_edit_root(ch, root, d.get("instruction") or m["text"], m["text"])
+        _reply(ch, root, reply if st == "edited" else _EDIT_MSG[st])
+        _log("edit", ch, root, m, 結果=st)
+        return 1
+
+    def _valid_bills(raw) -> list:
+        outp = []
+        for c in raw or []:
+            if isinstance(c, dict) and c.get("type") in ("issue", "rule") and (c.get("要約") or "").strip():
+                outp.append(_norm_item({**c, "確信度": c.get("確信度", 0.9)}))
+        return [c for c in outp if c.get("type") in ("issue", "rule")]
+
+    if action == "revise":
+        newb = _valid_bills(d.get("proposals"))
+        if not newb or count >= _PROPOSE_CAP + 2:  # 案が壊れている/回りすぎ → 従来ロジックの安全弁へ
+            return None
+        it["proposals"] = newb
+        it["propose_count"] = count + 1
+        _reply(ch, root, reply)
+        return 1
+
+    # action == "file"
+    if not bills:
+        return None  # まだ案が無い状態の承認＝従来ロジック（再分類）へ
+    results = [(p, _file_issue(p, it["permalink"], ch) if p["type"] == "issue"
+                else _file_rule(p, it["permalink"])) for p in bills]
+    ok = [(p, u) for p, u in results if u]
+    ng = [p for p, u in results if not u]
+    urls = [u for _, u in ok]
+    extra = ""
+    if urls and any(p["type"] == "rule" for p, _ in ok) and not it.get("root_edited"):
+        if _maybe_edit_root(ch, root, "", it.get("mention_text", "")) == "edited":
+            extra, it["root_edited"] = "\n指摘のあった投稿も直しました。", True
+    if urls and not ng:  # 全件成功
+        it["status"], it["page_urls"] = "filed", urls
+        codex_note = _maybe_enqueue_codex(it, m, ch, root, ok)
+        _reply(ch, root, reply + extra + codex_note + "\n" + "\n".join(urls))
+        _log("filed", ch, root, m, urls=urls,
+             routine=any(bool(p.get("routine")) for p, _ in ok),
+             依頼元=(it.get("mention_text") or "")[:200])
+        follow = _valid_bills(d.get("proposals"))
+        if follow:  # 承認に同梱された新しい指摘＝次のラウンドへ（取りこぼさない）
+            it["proposals"], it["status"] = follow, "awaiting_confirm"
+            it["propose_count"] = 1
+    elif urls and ng:  # 部分失敗＝失敗分だけ残し再試行可能に
+        it["proposals"], it["status"] = ng, "awaiting_confirm"
+        it["page_urls"], it["proposed_at"] = urls, runtime.now_ts()
+        _reply(ch, root, f"{len(bills)}件中{len(urls)}件 登録しました！" + extra + "\n" + "\n".join(urls)
+               + f"\n残り{len(ng)}件は起票に失敗しました。DBの共有を確認のうえ、もう一度「はい」で再試行します。")
+    elif not notion._token():
+        _reply(ch, root, reply + "（ローカル確認のため実際の保存はしていません）")
+    else:
+        _reply(ch, root, "起票に失敗しました。DBの共有を確認してもらえますか？")
+    return 1
+
+
 def _confirm_inner(it: dict, m: dict, ch: str, root: str) -> int:
+    """確認ターン。主経路＝会話エージェント（GPT 5.5）。出力不正・LLM不通時は従来の
+    決定論ロジック（_confirm_legacy）へフォールバック＝無反応にはならない。"""
+    r = _confirm_agent(it, m, ch, root)
+    if r is not None:
+        return r
+    print("[intake] confirm agent fallback -> legacy")
+    return _confirm_legacy(it, m, ch, root)
+
+
+def _confirm_legacy(it: dict, m: dict, ch: str, root: str) -> int:
     v = _verdict(m["text"])
     proposals = it.get("proposals") or ([it["proposal"]] if it.get("proposal") else [])
     bills = [p for p in proposals if p.get("type") in ("issue", "rule")]
