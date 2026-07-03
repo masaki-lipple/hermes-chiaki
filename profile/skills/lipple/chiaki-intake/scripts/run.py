@@ -396,9 +396,12 @@ def _candidates(cur: dict, items: dict):
     """戸田さんの新規メッセージ候補 [(msg, thread_root, channel, hint)]。"""
     mgmt, pdca = runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA
     pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
-    open_threads = {ts for ts, it in pend.items() if it.get("status") in ("pending", "awaiting_completion")}
+    # 裁定（apply-ruling）スレッドは**完了後も**通常の拾いから除外＝明示的な @メンションだけ受ける。
+    # 進行中だけ除外すると、完了した瞬間にスレッド内の過去の「OK」（裁定として処理済み）を
+    # intake が新規発話として拾い直し、後追いの雑談返信を投げる（2026-07-03 実バグ＝二重処理）。
+    ruling_threads = set(pend)
     # Codex 報告スレッドの返信は codex-runner の対話（継続実装/質問/反映依頼）が引き受ける＝intake は触らない
-    open_threads |= set(runtime.load_json("codex_threads.json", {"items": {}}).get("items", {}))
+    codex_threads = set(runtime.load_json("codex_threads.json", {"items": {}}).get("items", {}))
     awaiting = {(it.get("channel"), it.get("thread_root")) for it in items.values()
                 if it.get("status") == "awaiting_confirm"}
     # 戸田さん以外からの @Chiaki AI ＝エスカレーション対象（権限は戸田さんのみ・2026-07-02）。
@@ -421,9 +424,11 @@ def _candidates(cur: dict, items: dict):
             cand.append((m, m["ts"], mgmt, ""))
         elif m["ts_float"] > since_m and _esc_ok(m):
             cand.append((m, m["ts"], mgmt, "escalate"))
-        if m.get("thread_replies") and m["ts"] not in open_threads:
+        if m.get("thread_replies") and m["ts"] not in codex_threads:
+            need_mention = m["ts"] in ruling_threads  # 裁定スレッド内は @メンション明示のみ
             for r in source.read_thread(mgmt, m["ts"]):
-                if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_m:
+                if (r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_m
+                        and (not need_mention or MENTION in (r.get("text") or ""))):
                     cand.append((r, m["ts"], mgmt, ""))
     since_p = float(cur.get(pdca, 0.0))
     for m in source.read_recent(pdca, limit=50):
