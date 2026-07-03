@@ -86,6 +86,9 @@ def _classify_intake(text: str, context: str = "") -> list:
         "見えている問題は過去の投稿の直しで解消する）。issue(issue_kind=バグ)にするのはコードの動作そのものの不具合"
         "（起票されない・二重送信・反応しない・文字化けが毎回出る等の再現する症状）だけ。\n"
         "- question: 質問・依頼（『まとめて』『教えて』『何件？』）。\n"
+        "  ※『なぜ』『どうして』『何で』等の質問を含むメッセージは、不満や不具合への言及が同居していても"
+        " question を第一要素にする＝まず答える（2026-07-03 戸田「なぜってきいたらこういうバグでした、"
+        "というのが適切では」。質問に Issue 提案で返すのは会話として不適切）。\n"
         "- unclear: 指摘だが種別が曖昧（『なんか違う』等）。確信が低い時もここ。\n"
         "- none: 指摘・依頼・質問のいずれでもない（雑談・お礼・相づち・FYI・了承だけ 等）。\n"
         "**本当に独立した別々の指摘だけ要素を分ける**（例『スペース』と『全角』は別件＝2要素／"
@@ -243,6 +246,22 @@ def _thread_context(ch: str, root: str, before_ts: str, n: int = 6) -> str:
                      for m in msgs[-n:])
 
 
+def _fix_reports(n: int = 6) -> str:
+    """#8902 の直近の修正報告（Chiaki AI 自身の不具合と直した内容の記録）を知識として返す。
+    「なぜこうなる？」に「こういうバグでした」と答えるための情報源（2026-07-03 戸田指摘）。"""
+    try:
+        out = []
+        for m in source.read_recent(runtime.CH_CHIAKI_MGMT, limit=40):
+            t = m.get("text") or ""
+            if m.get("user_id") == runtime.CHIAKI_SELF and "報告：" in t[:40]:
+                out.append(f"[{(m.get('datetime') or '')[:16]}] {t[:400]}")
+            if len(out) >= n:
+                break
+        return "\n---\n".join(out) or "（まだ無し）"
+    except Exception:
+        return "（取得失敗）"
+
+
 def _answer(question: str, ch: str, root: str) -> str:
     try:
         from lib import llm
@@ -255,10 +274,12 @@ def _answer(question: str, ch: str, root: str) -> str:
                                          "このスレッド", "この流れ", "この会話", "上記"))
     prompt = ("あなたは Chiaki AI。戸田さんの依頼に簡潔に答えます（テキストのみ・絵文字なし・です/ます・要点）。"
               "分からないことは推測せず正直に言う。"
-              "自分の内部実装・コード・不具合の原因は分からないので、聞かれても推測で答えず"
-              "『コードの詳細は分かりかねます。原因調査や修正は Claude Code をお使いください』と正直に答える。"
+              "自分の不具合の「なぜ」を聞かれたら、下の「最近の修正報告」に該当する説明があれば"
+              "それに基づいて「こういうバグでした・こう直しました」と答える。該当が無ければ推測せず"
+              "『記録に見当たらないので、原因調査はClaude Codeに依頼してください』と正直に言う。"
               "太字や * による強調は使わない。\n"
-              f"依頼: {question}\nこのスレッドのやりとり:\n{convo}\n")
+              f"依頼: {question}\nこのスレッドのやりとり:\n{convo}\n"
+              f"\n最近の修正報告（Chiaki AI自身の不具合と直した内容の記録・新しい順）:\n{_fix_reports()}\n")
     if scoped:
         prompt += ("依頼は『このやりとり/今回』に限定されています。"
                    "**上の『このスレッドのやりとり』の中で実際に出た指摘・合意・変更点だけ**を拾って答えてください。"
