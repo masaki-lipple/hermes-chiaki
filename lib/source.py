@@ -58,71 +58,10 @@ def _api_post(method: str, payload: dict) -> dict:
         return json.loads(r.read().decode())
 
 
-# ── 箇条書きを Slack ネイティブの rich_text_list（リストタグ）で送る ─────────────
-_INLINE_RE = __import__("re").compile(
-    r"<@([A-Z0-9]+)(?:\|[^>]*)?>|<!(channel|here|everyone)>"
-    r"|<(https?://[^|>]+)(?:\|([^>]*))?>|(https?://[^\s<>]+)")
-_BULLET_RE = __import__("re").compile(r"^[ 　]*(?:•|・|-)[ 　]+(.*)$")
-
-
-def _inline_elements(s: str) -> list[dict]:
-    """1行ぶんのテキストを rich_text のインライン要素列へ（メンション/broadcast/リンク/テキスト）。"""
-    out, i = [], 0
-    for mm in _INLINE_RE.finditer(s):
-        if mm.start() > i:
-            out.append({"type": "text", "text": s[i:mm.start()]})
-        if mm.group(1):
-            out.append({"type": "user", "user_id": mm.group(1)})
-        elif mm.group(2):
-            out.append({"type": "broadcast", "range": mm.group(2)})
-        elif mm.group(3):
-            el = {"type": "link", "url": mm.group(3)}
-            if mm.group(4):
-                el["text"] = mm.group(4)
-            out.append(el)
-        elif mm.group(5):
-            out.append({"type": "link", "url": mm.group(5)})
-        i = mm.end()
-    if i < len(s):
-        out.append({"type": "text", "text": s[i:]})
-    return out or [{"type": "text", "text": s}]
-
-
-def _rich_blocks(text: str):
-    """箇条書き行(•/・/-)を含むテキストを rich_text ブロック化（section と bullet list を交互に）。
-    箇条書きが無ければ None（＝従来どおりプレーンテキスト送信）。失敗時も None でフォールバック。"""
-    try:
-        lines = (text or "").split("\n")
-        if not any(_BULLET_RE.match(ln) for ln in lines):
-            return None
-        els, sec, lst = [], [], []
-
-        def flush_sec():
-            if sec:
-                els.append({"type": "rich_text_section",
-                            "elements": _inline_elements("\n".join(sec))})
-                sec.clear()
-
-        def flush_lst():
-            if lst:
-                els.append({"type": "rich_text_list", "style": "bullet",
-                            "elements": [{"type": "rich_text_section",
-                                          "elements": _inline_elements(it)} for it in lst]})
-                lst.clear()
-
-        for ln in lines:
-            bm = _BULLET_RE.match(ln)
-            if bm:
-                flush_sec()
-                lst.append(bm.group(1))
-            else:
-                flush_lst()
-                sec.append(ln)
-        flush_sec()
-        flush_lst()
-        return [{"type": "rich_text", "elements": els}] if els else None
-    except Exception:
-        return None
+# ※旧 _rich_blocks（箇条書きを rich_text_list ブロックへ変換）は 2026-07-03 に廃止。
+#   section と list の間の空行が表示上消える＝生テキストは正しいのに見た目が詰まる不具合の真因で、
+#   テキスト層の修正（空行の自動挿入）では直らなかった（戸田「抜本的解消をしたい」）。
+#   以後は常にプレーンテキスト送信＝書いたとおりに表示される（チームの投稿と同じ・規約の「行頭•」表記）。
 
 
 def read_recent(channel_id: str, oldest_ts: float | None = None, limit: int = 200,
@@ -241,11 +180,8 @@ def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id} thread={thread_ts}\n  {text}")
         return {"ok": True, "dry": True}
-    payload = {"channel": channel_id, "thread_ts": thread_ts, "text": text}
-    blocks = _rich_blocks(text)
-    if blocks:
-        payload["blocks"] = blocks
-    return _api_post("chat.postMessage", payload)
+    return _api_post("chat.postMessage",
+                     {"channel": channel_id, "thread_ts": thread_ts, "text": text})
 
 
 def post_message(channel_id: str, text: str) -> dict:
@@ -253,21 +189,14 @@ def post_message(channel_id: str, text: str) -> dict:
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id}\n  {text}")
         return {"ok": True, "dry": True}
-    payload = {"channel": channel_id, "text": text}
-    blocks = _rich_blocks(text)
-    if blocks:
-        payload["blocks"] = blocks
-    return _api_post("chat.postMessage", payload)
+    return _api_post("chat.postMessage", {"channel": channel_id, "text": text})
 
 
 def update_message(channel_id: str, ts: str, text: str) -> dict:
-    """自分(chiaki)の既存投稿を編集（chat.update）。学習内容を投稿に反映する用。"""
+    """自分(chiaki)の既存投稿を編集（chat.update）。学習内容を投稿に反映する用。
+    blocks は常に空で送る＝旧 rich_text ブロック付き投稿もプレーンテキスト表示へ揃える。"""
     text = _blank_before_bullets(_ensure_mention(channel_id, text))
     if FIXTURES or not _TOKEN:
         print(f"[DRY update] ch={channel_id} ts={ts}\n  {text}")
         return {"ok": True, "dry": True}
-    payload = {"channel": channel_id, "ts": ts, "text": text}
-    blocks = _rich_blocks(text)
-    if blocks:
-        payload["blocks"] = blocks
-    return _api_post("chat.update", payload)
+    return _api_post("chat.update", {"channel": channel_id, "ts": ts, "text": text, "blocks": []})
