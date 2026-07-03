@@ -65,6 +65,8 @@ def _brief(item: dict, prev_output: str = "") -> str:
             "- git commit / push、デプロイ、Slack・Notion の操作はしない（ランナー側の工程）。\n"
             "\n## 完了時\n"
             "- 最後に「今回の変更点の要約」と「実施した検証と結果」を簡潔に出力する。\n"
+            "- 出力は Slack にそのまま貼られる。ファイルへの言及は相対パスの平文で書く"
+            "（[表示名](パス) のリンク形式や絶対パスは使わない＝Slack では壊れて表示される）。\n"
         )
     return (
         "あなたは Hermes/chiaki リポジトリの修正役です。リポジトリ直下の AGENTS.md の役割分担に従ってください。\n\n"
@@ -78,6 +80,8 @@ def _brief(item: dict, prev_output: str = "") -> str:
         "- 修正が不要・不可能と判断した場合はファイルを変えず、理由を出力して終了する。\n"
         "\n## 完了時\n"
         "- 最後に「変更点の要約」と「実施した検証と結果」を簡潔に出力する。\n"
+        "- 出力は Slack にそのまま貼られる。ファイルへの言及は相対パスの平文で書く"
+        "（[表示名](パス) のリンク形式や絶対パスは使わない＝Slack では壊れて表示される）。\n"
     )
 
 
@@ -114,7 +118,7 @@ def _classify_thread_reply(t: dict, text: str) -> dict | None:
     prompt = (
         "これは Codex（コード修正AI）の作業報告スレッドでの戸田さんの返信です。\n"
         f"作業の要約: {t.get('summary') or ''}\n"
-        f"直前のCodexの報告:\n{_tail(t.get('last_output') or '', 500)}\n\n"
+        f"直前のCodexの報告：\n{_tail(t.get('last_output') or '', 500)}\n\n"
         f"戸田さんの返信: {text}\n\n"
         "返信を分類し、JSON のみで返す:\n"
         '{"action": "continue|question|deploy|chat", "reply": "", "instruction": ""}\n'
@@ -179,9 +183,10 @@ def _process_threads() -> None:
         action = act.get("action")
         reply = (act.get("reply") or "").strip()
         if action == "continue":
+            # 内容行には「今回の指示」を出す（元の件名のままだと報告が実作業とズレて見える）
             runtime.append_jsonl("codex_queue.jsonl", {
                 "ts": now, "requested_by": runtime.TODA,
-                "summary": f"継続: {(t.get('summary') or '')[:80]}",
+                "summary": f"継続：{(act.get('instruction') or text)[:60]}",
                 "detail": act.get("instruction") or text,
                 "issue_url": t.get("issue_url") or "",
                 "continue_branch": t.get("branch") or "", "thread": tts})
@@ -243,7 +248,8 @@ def _register_thread(reg_items: dict, tts: str, item: dict, branch: str, res: di
     reg_items[tts] = {
         "branch": branch, "summary": item.get("summary") or "",
         "issue_url": item.get("issue_url") or "",
-        "status": "open", "last_seen_ts": runtime.now_ts(),
+        # 既読の起点は依頼時刻＝Codex実行中に届いた返信を取りこぼさない
+        "status": "open", "last_seen_ts": float(item.get("ts") or runtime.now_ts()),
         "last_output": _tail(res.get("output") or "", 900)}
 
 
@@ -318,12 +324,12 @@ def main():
         body = (f"<@{runtime.TODA}>\n報告：Codex実装（レビュー待ち）\n内容：{summary}\n\n"
                 f"Codexが実装を終えました。VPSのブランチ{branch}（ベース{res['base']}・"
                 f"変更{n_files}ファイル）に変更があります。\n\n"
-                f"Codexの報告:\n{_tail(res['output'])}\n\n"
+                f"Codexの報告：\n{_tail(res['output'])}\n\n"
                 f"続きの指示・質問はこのスレッドでどうぞ。本番反映はClaude Codeのレビュー後です。{issue_line}")
     elif res["ok"]:
         body = (f"<@{runtime.TODA}>\n報告：Codex実装（変更なし）\n内容：{summary}\n\n"
                 f"Codexは修正不要（または対応不可）と判断し、コードは変更されていません。\n\n"
-                f"Codexの報告:\n{_tail(res['output'])}\n\n"
+                f"Codexの報告：\n{_tail(res['output'])}\n\n"
                 f"続きの指示・質問はこのスレッドでどうぞ。{issue_line}")
     else:
         body = (f"<@{runtime.TODA}>\n報告：Codex実装（失敗）\n内容：{summary}\n\n"
@@ -335,7 +341,8 @@ def main():
         t = reg_items.get(item["thread"])
         if t is not None:
             t["last_output"] = _tail(res.get("output") or "", 900)
-            t["last_seen_ts"] = runtime.now_ts()
+            # last_seen_ts はここで進めない＝Codex実行中に届いた戸田さんの返信を
+            # 既読扱いで飲み込まない（2026-07-03「同じことは起きない？」が黙殺された実バグ）
     elif origin_thread:
         source.post_thread_reply(CH, origin_thread, body)
         _register_thread(reg_items, origin_thread, item, branch, res)
