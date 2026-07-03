@@ -589,6 +589,26 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str) -> int:
     return acted
 
 
+_CODEX_RE = re.compile(r"codex", re.I)
+
+
+def _maybe_enqueue_codex(it: dict, m: dict, ch: str, root: str, ok: list) -> str:
+    """依頼文または確認返信に「Codex」があれば、起票済み issue を codex-runner のキューへ積む。
+    権限＝確認ターンに到達できるのは戸田さんのみ＋runner 側でも requested_by を再検証（二重ゲート）。
+    返り値は返信に足す一言（積まなければ空文字）。"""
+    if not _CODEX_RE.search((it.get("mention_text") or "") + " " + (m.get("text") or "")):
+        return ""
+    issues = [(p, u) for p, u in ok if p.get("type") == "issue"]
+    if not issues:
+        return ""
+    for p, u in issues:
+        runtime.append_jsonl("codex_queue.jsonl", {
+            "ts": runtime.now_ts(), "requested_by": m.get("user_id"),
+            "summary": p.get("要約") or "", "detail": p.get("詳細") or "",
+            "issue_url": u or "", "channel": ch, "thread": root})
+    return "\nCodexに実装させます！できあがったら#8902にレビュー待ちで報告します。"
+
+
 def _handle_go_extra(it: dict, m: dict, ch: str, root: str, filed_bills: list) -> None:
     """go_plus の残り（承認語を除いた追加依頼）を処理。起票直後に呼ぶ。
     起票済みと同じ問題の「修正実行して」だけなら黙って完結（重複提案ループを作らない）。
@@ -643,7 +663,8 @@ def _confirm_inner(it: dict, m: dict, ch: str, root: str) -> int:
         if urls and not ng:  # 全件成功
             it["status"], it["page_urls"] = "filed", urls
             head = "登録しました！" if len(urls) == 1 else f"{len(urls)}件 登録しました！"
-            _reply(ch, root, head + extra + "\n" + "\n".join(urls))
+            codex_note = _maybe_enqueue_codex(it, m, ch, root, ok)
+            _reply(ch, root, head + extra + codex_note + "\n" + "\n".join(urls))
             _log("filed", ch, root, m, urls=urls,
                  routine=any(bool(p.get("routine")) for p, _ in ok),
                  依頼元=(it.get("mention_text") or "")[:200])
