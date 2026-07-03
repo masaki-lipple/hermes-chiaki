@@ -373,6 +373,8 @@ def _candidates(cur: dict, items: dict):
     mgmt, pdca = runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA
     pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
     open_threads = {ts for ts, it in pend.items() if it.get("status") in ("pending", "awaiting_completion")}
+    # Codex 報告スレッドの返信は codex-runner の対話（継続実装/質問/反映依頼）が引き受ける＝intake は触らない
+    open_threads |= set(runtime.load_json("codex_threads.json", {"items": {}}).get("items", {}))
     awaiting = {(it.get("channel"), it.get("thread_root")) for it in items.values()
                 if it.get("status") == "awaiting_confirm"}
     # 戸田さん以外からの @Chiaki AI ＝エスカレーション対象（権限は戸田さんのみ・2026-07-02）。
@@ -705,7 +707,9 @@ def _confirm_inner(it: dict, m: dict, ch: str, root: str) -> int:
     if cs2 and cs2[0].get("type") == "question":
         ans = _answer(m["text"], ch, root)
         if ans:
-            _reply(ch, root, ans + "\nこの提案は開いたままなので、GO・却下・文面修正はいつでもどうぞ。")
+            # 案内フッターは付けない＝会話のループ感を出さない（2026-07-03 戸田「自然な会話をしたい」。
+            # awaiting は維持しているので GO/却下/文面修正はそのまま受け付けられる）
+            _reply(ch, root, ans)
             return 1
     if cs2 and cs2[0].get("type") == "none":
         _reply(ch, root, _smalltalk(m["text"]))

@@ -2,11 +2,17 @@
 """codex-runner: 戸田さん承認済みの修正依頼キュー（codex_queue.jsonl）を Codex（GPT）に
 実装させ、ローカルブランチ＋#8902へのレビュー待ち報告まで行う。デプロイはしない
 （採用可否・本番反映は Claude Code のレビュー後＝2026-07-03 戸田合意の枠）。
-cron 例: */10 * * * *（--no-agent / --script）。flock で同時実行1・1回の起動で1件だけ処理。
+
+さらに報告スレッドでの対話を受け付ける（段階1・2026-07-03 戸田指示「細かくSlack上で
+やりとりして進めたい」）: 戸田さんの返信を GPT で読み、追加指示なら同じブランチで
+Codex が続きを実装、質問なら答え、反映依頼なら記録して案内、雑談には自然に応じる。
+
+cron 例: */10 * * * *（listener がスレッド返信で即時起動・cron はバックストップ）。
+flock で同時実行1・1起動で Codex 実行は1件だけ。
 
 セキュリティ:
-- キュー投入は chiaki-intake の確認ターン経由（戸田さんの GO のみ）＋本スキルでも
-  requested_by が戸田さんの user ID であることを再検証（二重ゲート）。
+- キュー投入は chiaki-intake の確認ターン（戸田さんの GO）とこの報告スレッド（戸田さんの
+  返信のみ読む）経由＋本スキルでも requested_by を再検証（二重ゲート）。
 - Codex は作業クローン内の workspace-write サンドボックスで実行。git push はしない
   （VPS に GitHub 書き込み権限を持たせない）。
 """
@@ -14,19 +20,23 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime, source  # noqa: E402
+from lib import runtime, source, observe  # noqa: E402
 
 REPO = os.environ.get("HERMES_CODEX_REPO") or os.path.expanduser("~/src/hermes-chiaki")
 WORK = os.environ.get("HERMES_CODEX_WORK") or os.path.expanduser("~/src/hermes-chiaki-codex")
 CODEX = os.environ.get("HERMES_CODEX_BIN") or os.path.expanduser("~/.local/bin/codex")
+CH = runtime.CH_CHIAKI_MGMT
 TIMEOUT_SEC = 1800
-DAILY_CAP = 5  # 暴走防止（レビュー渋滞も防ぐ）
+DAILY_CAP = 5          # Codex 実行の日次上限（暴走とレビュー渋滞の防止）
+THREAD_IDLE_CLOSE = 7 * 86400   # 無活動7日でスレッドを閉じる
+THREAD_PURGE = 30 * 86400       # 閉じて30日で台帳から削除
 
 
 def _git(repo: str, *args: str, check: bool = True) -> str:
@@ -36,7 +46,26 @@ def _git(repo: str, *args: str, check: bool = True) -> str:
     return r.stdout.strip()
 
 
-def _brief(item: dict) -> str:
+def _tail(text: str, limit: int = 700) -> str:
+    t = (text or "").strip()
+    return t if len(t) <= limit else "…" + t[-limit:]
+
+
+def _brief(item: dict, prev_output: str = "") -> str:
+    if item.get("continue_branch"):
+        return (
+            "あなたは Hermes/chiaki リポジトリの修正役です。リポジトリ直下の AGENTS.md の役割分担に従ってください。\n\n"
+            f"## これは進行中の作業の続きです（ブランチ {item['continue_branch']}）\n"
+            f"元の依頼: {item.get('summary') or ''}\n"
+            + (f"\n## 前回のあなたの報告\n{_tail(prev_output, 900)}\n" if prev_output else "")
+            + f"\n## 戸田さんからの追加指示\n{item.get('detail') or ''}\n"
+            "\n## 制約\n"
+            "- 現在のブランチの変更を活かしたまま、追加指示を反映する。\n"
+            "- コード修正と検証（python3 -m py_compile ＋依頼内容に応じたテスト）だけを行う。\n"
+            "- git commit / push、デプロイ、Slack・Notion の操作はしない（ランナー側の工程）。\n"
+            "\n## 完了時\n"
+            "- 最後に「今回の変更点の要約」と「実施した検証と結果」を簡潔に出力する。\n"
+        )
     return (
         "あなたは Hermes/chiaki リポジトリの修正役です。リポジトリ直下の AGENTS.md の役割分担に従ってください。\n\n"
         f"## 依頼（戸田さん承認済み）\n"
@@ -52,25 +81,143 @@ def _brief(item: dict) -> str:
     )
 
 
-def _post(text: str) -> None:
-    source.post_message(runtime.CH_CHIAKI_MGMT, text)
+def _fmt(body: str) -> str:
+    b = runtime.ensure_punct(observe.enforce_regulations(body))
+    try:
+        from lib import llm
+        tag = llm.last_used()
+        if tag:
+            b += f"\n（{tag}）"
+    except Exception:
+        pass
+    return f"<@{runtime.TODA}>\n{b}"
 
 
-def _run_codex(item: dict, branch: str) -> dict:
+def _post(text: str) -> str:
+    """top-level 投稿。返り値は投稿 ts（スレッド台帳のキー）。"""
+    r = source.post_message(CH, text)
+    return (r or {}).get("ts") or ""
+
+
+def _reply(thread_ts: str, body: str) -> None:
+    source.post_thread_reply(CH, thread_ts, _fmt(body))
+
+
+# ── 報告スレッドでの対話（段階1） ─────────────────────────
+def _classify_thread_reply(t: dict, text: str) -> dict | None:
+    """戸田さんのスレッド返信を分類。返り値 {action, reply, instruction} / 失敗時 None。"""
+    try:
+        from lib import llm
+    except Exception:
+        return None
+    prompt = (
+        "これは Codex（コード修正AI）の作業報告スレッドでの戸田さんの返信です。\n"
+        f"作業の要約: {t.get('summary') or ''}\n"
+        f"直前のCodexの報告:\n{_tail(t.get('last_output') or '', 500)}\n\n"
+        f"戸田さんの返信: {text}\n\n"
+        "返信を分類し、JSON のみで返す:\n"
+        '{"action": "continue|question|deploy|chat", "reply": "", "instruction": ""}\n'
+        "- continue: コードの追加修正・やり直し・改善の指示。instruction に Codex への指示を"
+        "具体的に書く（戸田さんの言葉を補って明確に）。reply には着手の一言。\n"
+        "- question: この作業への質問（コード変更なし）。reply に文脈を踏まえた答えを書く。\n"
+        "- deploy: 本番反映の依頼（「反映して」「デプロイして」「本番に出して」等）。\n"
+        "- chat: 了解・お礼・雑談。reply に短く自然な応答（定型文にしない）。\n"
+        "reply は です・ます調・1〜3文・感嘆符は！・@メンションは書かない。"
+    )
+    from lib import llm
+    out = llm.gpt(prompt, max_tokens=400) or ""
+    m = re.search(r"\{.*\}", out, re.S)
+    if not m:
+        return None
+    try:
+        d = json.loads(m.group(0))
+    except Exception:
+        return None
+    return d if d.get("action") in ("continue", "question", "deploy", "chat") else None
+
+
+def _process_threads() -> None:
+    """開いている報告スレッドの戸田さんの新着返信を処理する。"""
+    reg = runtime.load_json("codex_threads.json", {"items": {}})
+    items = reg.setdefault("items", {})
+    now = runtime.now_ts()
+    changed = False
+    for tts, t in list(items.items()):
+        last = float(t.get("last_seen_ts") or 0)
+        if t.get("status") == "closed":
+            if now - last > THREAD_PURGE:
+                del items[tts]
+                changed = True
+            continue
+        if now - last > THREAD_IDLE_CLOSE:
+            t["status"] = "closed"
+            changed = True
+            continue
+        try:
+            replies = source.read_thread(CH, tts)
+        except Exception as e:
+            print(f"[codex-runner] read_thread failed {tts}: {e}")
+            continue
+        new = [m for m in replies
+               if m.get("user_id") == runtime.TODA and float(m.get("ts_float") or 0) > last]
+        if not new:
+            continue
+        text = "\n".join((m.get("text") or "") for m in new)
+        try:
+            from lib import llm
+            llm.reset_used()
+        except Exception:
+            pass
+        act = _classify_thread_reply(t, text)
+        if not act:
+            # 分類不能（LLM全滅など）は last_seen を進めず次回リトライ＝黙殺しない
+            print(f"[codex-runner] classify failed {tts}")
+            continue
+        t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
+        changed = True
+        action = act.get("action")
+        reply = (act.get("reply") or "").strip()
+        if action == "continue":
+            runtime.append_jsonl("codex_queue.jsonl", {
+                "ts": now, "requested_by": runtime.TODA,
+                "summary": f"継続: {(t.get('summary') or '')[:80]}",
+                "detail": act.get("instruction") or text,
+                "issue_url": t.get("issue_url") or "",
+                "continue_branch": t.get("branch") or "", "thread": tts})
+            _reply(tts, reply or "追加の指示を受け取りました！Codexに続きを任せます。")
+            print(f"[codex-runner] thread {tts} -> continue queued")
+        elif action == "deploy":
+            t["deploy_requested"] = True
+            _reply(tts, "本番への反映はClaude Codeのレビューを通してから行う約束にしています。"
+                        "レビュー依頼として記録したので、確認でき次第反映します！")
+            print(f"[codex-runner] thread {tts} -> deploy requested")
+        else:  # question / chat
+            if reply:
+                _reply(tts, reply)
+            print(f"[codex-runner] thread {tts} -> {action}")
+    if changed:
+        runtime.save_json("codex_threads.json", reg)
+
+
+# ── Codex 実行 ────────────────────────────────────────
+def _run_codex(item: dict, branch: str, prev_output: str = "") -> dict:
     """作業クローンで codex exec。返り値 {ok, output, changed, diffstat, base}。"""
     if not os.path.isdir(WORK):
         subprocess.run(["git", "clone", "-q", REPO, WORK], check=True, timeout=300)
     _git(WORK, "fetch", "-q", "origin")
-    _git(WORK, "checkout", "-q", "-B", branch, "origin/main")
-    _git(WORK, "reset", "-q", "--hard", "origin/main")
-    _git(WORK, "clean", "-qfd")
+    if item.get("continue_branch"):
+        _git(WORK, "checkout", "-q", branch)   # 既存ブランチの変更を保持したまま続ける
+    else:
+        _git(WORK, "checkout", "-q", "-B", branch, "origin/main")
+        _git(WORK, "reset", "-q", "--hard", "origin/main")
+        _git(WORK, "clean", "-qfd")
     base = _git(WORK, "rev-parse", "--short", "HEAD")
 
     env = dict(os.environ)
     env["PATH"] = os.path.dirname(CODEX) + ":" + env.get("PATH", "")
     try:
         r = subprocess.run(
-            [CODEX, "exec", "-s", "workspace-write", "-C", WORK, _brief(item)],
+            [CODEX, "exec", "-s", "workspace-write", "-C", WORK, _brief(item, prev_output)],
             capture_output=True, text=True, timeout=TIMEOUT_SEC, env=env)
         out = (r.stdout or "") + ("\n" + r.stderr if r.returncode != 0 else "")
         ok = r.returncode == 0
@@ -84,13 +231,19 @@ def _run_codex(item: dict, branch: str) -> dict:
         _git(WORK, "add", "-A")
         _git(WORK, "-c", "user.name=codex-runner", "-c", "user.email=codex@lipple.local",
              "commit", "-q", "-m", f"codex: {(item.get('summary') or '')[:72]}")
-        diffstat = _git(WORK, "diff", "--stat", "origin/main..HEAD")
+    if item.get("continue_branch") or changed:
+        diffstat = _git(WORK, "diff", "--stat", "origin/main..HEAD", check=False)
     return {"ok": ok, "output": out.strip(), "changed": changed, "diffstat": diffstat, "base": base}
 
 
-def _tail(text: str, limit: int = 700) -> str:
-    t = (text or "").strip()
-    return t if len(t) <= limit else "…" + t[-limit:]
+def _register_thread(reg_items: dict, tts: str, item: dict, branch: str, res: dict) -> None:
+    if not tts:
+        return
+    reg_items[tts] = {
+        "branch": branch, "summary": item.get("summary") or "",
+        "issue_url": item.get("issue_url") or "",
+        "status": "open", "last_seen_ts": runtime.now_ts(),
+        "last_output": _tail(res.get("output") or "", 900)}
 
 
 def main():
@@ -100,6 +253,8 @@ def main():
     except OSError:
         print("[codex-runner] already running")
         return
+
+    _process_threads()  # 報告スレッドの対話（継続指示はここでキューに積まれる）
 
     st = runtime.load_json("codex_runner.json", {"done": {}, "days": {}})
     queue = [q for q in runtime.read_jsonl("codex_queue.jsonl")
@@ -126,11 +281,17 @@ def main():
         print("[codex-runner] rejected: not TODA")
         return
 
-    branch = f"codex/q{int(float(item.get('ts', 0)))}"
+    reg = runtime.load_json("codex_threads.json", {"items": {}})
+    reg_items = reg.setdefault("items", {})
+    cont = item.get("continue_branch") or ""
+    branch = cont or f"codex/q{int(float(item.get('ts', 0)))}"
+    prev_output = ""
+    if cont and item.get("thread") in reg_items:
+        prev_output = reg_items[item["thread"]].get("last_output") or ""
     summary = (item.get("summary") or "（無題）").strip()
     print(f"[codex-runner] start {branch}: {summary[:60]}")
     try:
-        res = _run_codex(item, branch)
+        res = _run_codex(item, branch, prev_output)
     except Exception as e:
         res = {"ok": False, "output": f"ランナー内部エラー: {e}", "changed": False,
                "diffstat": "", "base": "?"}
@@ -144,19 +305,31 @@ def main():
     issue_line = f"\n{item['issue_url']}" if item.get("issue_url") else ""
     if res["ok"] and res["changed"]:
         n_files = len(re.findall(r"\|", res["diffstat"])) or "?"
-        _post(f"<@{runtime.TODA}>\n報告：Codex実装（レビュー待ち）\n内容：{summary}\n\n"
-              f"Codexが実装を終えました。VPSのブランチ{branch}（ベース{res['base']}・"
-              f"変更{n_files}ファイル）に変更があります。\n\n"
-              f"Codexの報告:\n{_tail(res['output'])}\n\n"
-              f"この変更はまだ本番に反映されていません。Claude Codeがレビューして採用可否を判断します。{issue_line}")
+        body = (f"<@{runtime.TODA}>\n報告：Codex実装（レビュー待ち）\n内容：{summary}\n\n"
+                f"Codexが実装を終えました。VPSのブランチ{branch}（ベース{res['base']}・"
+                f"変更{n_files}ファイル）に変更があります。\n\n"
+                f"Codexの報告:\n{_tail(res['output'])}\n\n"
+                f"続きの指示・質問はこのスレッドでどうぞ。本番反映はClaude Codeのレビュー後です。{issue_line}")
     elif res["ok"]:
-        _post(f"<@{runtime.TODA}>\n報告：Codex実装（変更なし）\n内容：{summary}\n\n"
-              f"Codexは修正不要（または対応不可）と判断し、コードは変更されていません。\n\n"
-              f"Codexの報告:\n{_tail(res['output'])}{issue_line}")
+        body = (f"<@{runtime.TODA}>\n報告：Codex実装（変更なし）\n内容：{summary}\n\n"
+                f"Codexは修正不要（または対応不可）と判断し、コードは変更されていません。\n\n"
+                f"Codexの報告:\n{_tail(res['output'])}\n\n"
+                f"続きの指示・質問はこのスレッドでどうぞ。{issue_line}")
     else:
-        _post(f"<@{runtime.TODA}>\n報告：Codex実装（失敗）\n内容：{summary}\n\n"
-              f"Codexの実行が失敗しました。Claude Codeでの対応に切り替えてください。\n\n"
-              f"{_tail(res['output'])}{issue_line}")
+        body = (f"<@{runtime.TODA}>\n報告：Codex実装（失敗）\n内容：{summary}\n\n"
+                f"Codexの実行が失敗しました。このスレッドで指示をもらえれば再試行します。\n\n"
+                f"{_tail(res['output'])}{issue_line}")
+
+    if cont and item.get("thread"):
+        source.post_thread_reply(CH, item["thread"], body)
+        t = reg_items.get(item["thread"])
+        if t is not None:
+            t["last_output"] = _tail(res.get("output") or "", 900)
+            t["last_seen_ts"] = runtime.now_ts()
+    else:
+        tts = _post(body)
+        _register_thread(reg_items, tts, item, branch, res)
+    runtime.save_json("codex_threads.json", reg)
     print(f"[codex-runner] done ok={res['ok']} changed={res['changed']}")
 
 

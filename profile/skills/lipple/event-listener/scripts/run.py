@@ -76,6 +76,24 @@ def _is_intake_thread(ch: str, thread_ts: str) -> bool:
                and it.get("thread_root") == thread_ts for it in items.values())
 
 
+def _is_codex_thread(ch: str, thread_ts: str) -> bool:
+    """その返信が codex-runner の報告スレッドか＝対話（継続実装/質問/反映依頼）を即時起動。"""
+    if not thread_ts or ch != WATCH_MGMT:
+        return False
+    t = runtime.load_json("codex_threads.json", {"items": {}}).get("items", {}).get(thread_ts)
+    return bool(t and t.get("status") != "closed")
+
+
+def _run_codex_runner():
+    """codex-runner を切り離した子プロセスで起動（Codex 実行は最長30分＝listener を塞がない。
+    多重起動は runner 内部の flock が防ぐ）。"""
+    import subprocess
+    script = os.path.join(os.environ["HERMES_PROFILE_DIR"], "scripts/codex_runner.py")
+    subprocess.Popen([sys.executable, script],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
 _DEDUP_LOCK = threading.Lock()
 
 
@@ -124,7 +142,9 @@ def main():
         # 戸田さんの明示的な @メンションは intake 最優先（監査確定：促しスレッド内の @メンションが
         # _is_relevant で apply-ruling に回り黙殺されていた）。メンション無しの裁定返信は従来どおり apply。
         action = None
-        if user == runtime.TODA and etype == "app_mention":
+        if user == runtime.TODA and _is_codex_thread(ch, tts):
+            action = "codex"   # Codex 報告スレッド内は @メンション有無に関わらず対話として扱う
+        elif user == runtime.TODA and etype == "app_mention":
             action = "intake"
         elif _is_relevant(ch, tts):
             action = "apply"
@@ -143,6 +163,9 @@ def main():
             if action == "apply":
                 print(f"[listener] ruling event ch={ch} thread={tts} -> apply-ruling", flush=True)
                 _run_apply()
+            elif action == "codex":
+                print(f"[listener] codex thread reply ch={ch} thread={tts} -> codex-runner (即時)", flush=True)
+                _run_codex_runner()
             else:
                 print(f"[listener] toda {etype} ch={ch} -> chiaki-intake (即時)", flush=True)
                 _run_intake()
