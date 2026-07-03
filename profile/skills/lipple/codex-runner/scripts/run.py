@@ -289,6 +289,15 @@ def main():
     if cont and item.get("thread") in reg_items:
         prev_output = reg_items[item["thread"]].get("last_output") or ""
     summary = (item.get("summary") or "（無題）").strip()
+    # 会話スレッド発の依頼＝進捗も完了もそのスレッドへ（2026-07-03 戸田「進捗を同じスレッド内で報告させて」）
+    origin_thread = "" if cont else (item.get("thread") or "")
+    if origin_thread:
+        try:
+            from lib import llm
+            llm.reset_used()
+        except Exception:
+            pass
+        _reply(origin_thread, "Codexが作業を開始しました。終わったらこのスレッドに報告します。")
     print(f"[codex-runner] start {branch}: {summary[:60]}")
     try:
         res = _run_codex(item, branch, prev_output)
@@ -326,6 +335,9 @@ def main():
         if t is not None:
             t["last_output"] = _tail(res.get("output") or "", 900)
             t["last_seen_ts"] = runtime.now_ts()
+    elif origin_thread:
+        source.post_thread_reply(CH, origin_thread, body)
+        _register_thread(reg_items, origin_thread, item, branch, res)
     else:
         tts = _post(body)
         _register_thread(reg_items, tts, item, branch, res)

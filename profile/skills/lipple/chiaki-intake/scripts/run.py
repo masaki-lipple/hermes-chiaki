@@ -608,7 +608,15 @@ def _maybe_enqueue_codex(it: dict, m: dict, ch: str, root: str, ok: list) -> str
             "ts": runtime.now_ts(), "requested_by": m.get("user_id"),
             "summary": p.get("要約") or "", "detail": p.get("詳細") or "",
             "issue_url": u or "", "channel": ch, "thread": root})
-    return "\nCodexに実装させます！できあがったら#8902にレビュー待ちで報告します。"
+    try:  # ランナーを即起動（cron待ちで最大10分黙らせない）。多重起動は runner 内の flock が防ぐ
+        import subprocess
+        script = os.path.join(os.environ.get("HERMES_PROFILE_DIR", ""), "scripts/codex_runner.py")
+        if os.path.isfile(script):
+            subprocess.Popen([sys.executable, script], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+    return "\nCodexに実装させます！進捗はこのスレッドに報告します。"
 
 
 def _handle_go_extra(it: dict, m: dict, ch: str, root: str, filed_bills: list) -> None:
