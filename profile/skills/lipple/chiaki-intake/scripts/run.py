@@ -16,6 +16,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from collections import Counter
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
@@ -890,6 +892,53 @@ def _confirm_legacy(it: dict, m: dict, ch: str, root: str) -> int:
     return 1
 
 
+_PROGRESS_FIRST_SEC = 30   # ここまでに本応答が出なければ方向性を出す（2026-07-07 戸田「30秒待っても全然いい」）
+_PROGRESS_EVERY_SEC = 60   # 以降の経過共有の間隔
+_PROGRESS_NOTES = ("まだ考えをまとめています。もう少しだけお待ちください！",
+                   "引き続きまとめています。時間がかかっていてすみません！")
+
+
+def _progress_watch(ch: str, root: str, m: dict):
+    """本応答に時間がかかるときの経過共有（2026-07-07 戸田要望「考え中のときは考えをメンションして」）。
+    受信直後に方向性の一言（GPT 5.5）を並行生成し、30秒たっても本応答が出ていなければ投稿。
+    以降60秒ごとに経過を上限2回＝2分超の沈黙を作らない。速く返せた時は何も出さない。
+    見張りは別スレッド＝llm の使用記録は threading.local なので本応答のモデルタグと混ざらない。
+    返り値＝本応答の完了時に呼ぶ cancel。"""
+    done = threading.Event()
+
+    def _run():
+        t0 = time.time()
+        direction = ""
+        try:
+            from lib import llm
+            llm.reset_used()
+            direction = (llm.gpt(
+                "戸田さんから次のメッセージを受け取り、いま返事を考えています。\n"
+                f"メッセージ: {(m.get('text') or '')[:400]}\n"
+                "どう受け取ったか・どう動くつもりかの方向性だけを1〜2文で先に伝える"
+                "（です・ます調・感嘆符は全角！・太字や*や@メンションは書かない・"
+                "「考え中です」だけの中身のない文にしない）。テキストのみを返す。",
+                max_tokens=150) or "").strip()
+        except Exception:
+            direction = ""
+        if done.wait(max(0.0, _PROGRESS_FIRST_SEC - (time.time() - t0))):
+            return
+        if direction:
+            _reply(ch, root, direction)
+        for note in _PROGRESS_NOTES:
+            if done.wait(_PROGRESS_EVERY_SEC):
+                return
+            try:
+                from lib import llm
+                llm.reset_used()  # 固定文＝モデルタグなし
+            except Exception:
+                pass
+            _reply(ch, root, note)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return done.set
+
+
 def main():
     cur = runtime.load_json("tuning_cursor.json", {})
     intake = runtime.load_json("chiaki_intake.json", {"items": {}})
@@ -921,7 +970,14 @@ def main():
                 # 戸田さん以外＝分類・実行せず戸田さんへ引き継ぎ（冪等：処理済みtsは再送しない）
                 acted += 0 if m["ts"] in items else _escalate(items, m, ch, root)
             else:
-                acted += _handle_confirm(it, m, ch, root) if it else _handle_propose(m, ch, root, items)
+                # 経過共有の見張り＝必ず返事が来る経路（確認ターン/明示メンション）だけ。
+                # メンション無しのトップレベルは分類結果が「静観」の可能性があるため付けない。
+                watch = it is not None or MENTION in (m.get("text") or "")
+                cancel = _progress_watch(ch, root, m) if watch else (lambda: None)
+                try:
+                    acted += _handle_confirm(it, m, ch, root) if it else _handle_propose(m, ch, root, items)
+                finally:
+                    cancel()
             if ch not in failed:
                 maxts[ch] = m["ts_float"]  # 連続成功プレフィックスの高水位だけ前進
         except Exception as e:
