@@ -259,6 +259,23 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
     if not (src_ch and src_ts and tgt):
         return 0
     replies = source.read_thread(src_ch, src_ts)
+    if not replies:
+        # スレッドが読めない＝対象が完全に消えたか一時的なAPI失敗（区別不能）。
+        # 削除済みtsへの返信はトップレベルに浮くため、リマインドは出さない。
+        # 3回連続（約3分）で読めなければ gone でクローズ（GO時の生存確認と同じ扱い・2026-07-07）。
+        n = it.get("empty_reads", 0) + 1
+        it["empty_reads"] = n
+        if n >= 3:
+            it["status"] = "gone"
+            _save(pend)
+            source.post_thread_reply(
+                runtime.CH_CHIAKI_MGMT, tts,
+                f"<@{runtime.CHIAKI_SELF}>\n対象の投稿が削除されたようなので、この依頼をクローズします。")
+            return 1
+        _save(pend)
+        return 0
+    if it.pop("empty_reads", None):
+        _save(pend)
     # 対象者の最新の完了報告（chiaki へのメンション or 完了語）。未来形・着手宣言は報告扱いしない。
     report = None
     for m in replies:
