@@ -181,6 +181,26 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
         report = ("この提案は対象スレッド・対象者を特定できないため、自動投稿ができません。"
                   "いったんクローズします（対応が必要でしたら手動でお願いします）。")
     else:
+        # 対象の生存・現状確認＝提案からGOまで時間が空く（翌日GOもある）。削除済みの投稿への
+        # スレッド返信は Slack がエラーにせずトップレベルへ落とす（2026-07-07 実バグ＝存在しない
+        # 投稿への修正依頼が宙に浮き、松永さんが「どこにある？」と困惑）。
+        src_msgs = source.read_thread(src_ch, src_ts)
+        src_root = next((x for x in src_msgs if x.get("ts") == src_ts), None)
+        found = it.get("verify_found") or ""
+        if src_root is None:
+            it["status"], it["ruling_text"] = "gone", ruling_text
+            report = "対象の投稿が削除されていたため、修正依頼は出しませんでした。この提案はクローズします。"
+        elif found and found not in (src_root.get("text") or ""):
+            it["status"], it["ruling_text"] = "already_fixed", ruling_text
+            report = "対象の投稿はすでに直っていたため、修正依頼は出しませんでした。この提案はクローズします。"
+        if report:
+            _save(pend)
+            runtime.append_jsonl("rulings.jsonl", {
+                "ts": runtime.now_ts(), "thread_ts": tts, "verdict": it["status"],
+                "kind": it.get("finding_kind", ""), "original": draft,
+                "final_text": "", "ruling_text": ruling_text})
+            source.post_thread_reply(runtime.CH_CHIAKI_MGMT, tts, f"<@{runtime.CHIAKI_SELF}>\n{report}")
+            return 1
         if verdict == "go":
             final = draft
         else:
