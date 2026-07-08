@@ -30,6 +30,65 @@ def _target(channel: str):
     return CH_TARGET.get(channel, ("", "担当者"))
 
 
+# 表示名（user_profile はAPIで返らないことが多いためIDマップ・未知IDは「担当者」）
+NAMES = {"U9R35H06L": "Masaki Toda", "U09T44VEZM1": "Yu Matsunaga", "U9UA8NQCB": "Risa Nemoto"}
+
+
+def _context_precheck(f: dict, found: str, suggest: str):
+    """柱1（2026-07-07 戸田「文脈よんでほしい」）: 提案化の直前に GPT 5.5 がスレッド全文を読み、
+    ①本当に直すべきか ②文脈から見た正しい修正案 ③作者宛の依頼文 を一括判断する。
+    宛先はチャンネル固定でなく**投稿の作者**（戸田さんの誤字が松永さんに飛んだ実バグの根治）。
+    返り値: None=旧経路（author情報の無い旧finding・LLM不通）／{"drop": 理由}／精査結果 dict。"""
+    author = f.get("author") or ""
+    root = f.get("thread_root") or f.get("msg_ts") or ""
+    if not author:
+        return None
+    if author in (runtime.CHIAKI_SELF, runtime.GCP_TASK_BOT):
+        return {"drop": "bot"}
+    try:
+        from lib import llm
+    except Exception:
+        return None
+    try:
+        thread = source.read_thread(f.get("channel", ""), root)
+    except Exception:
+        thread = []
+    convo = "\n".join(
+        f"- {NAMES.get(x.get('user_id'), x.get('user_name') or '参加者')}: {(x.get('text') or '')[:200]}"
+        for x in thread[-15:]) or "（スレッドなし）"
+    name = NAMES.get(author, "担当者")
+    light = author == runtime.TODA
+    tone = ("相手は投稿の作者本人で上長の戸田さんなので、依頼調にせず"
+            "「〜の誤字でしょうか？よければ直しておいてください！」程度の軽い指摘にする。報告のお願いは書かない。"
+            if light else
+            "修正が終わったらメンションで報告してほしい旨を一言添える。")
+    prompt = (
+        "Slackの投稿に表記の検知がありました。スレッドの文脈で精査してください。\n"
+        f"スレッドのやりとり（古い順）:\n{convo}\n\n"
+        f"検知対象: {name}さんの投稿「{(f.get('excerpt') or '')[:120]}」\n"
+        f"検知: 「{found}」→「{suggest}」\n\n"
+        "JSON のみで返す: {\"real\": true/false, \"suggest\": \"\", \"request\": \"\"}\n"
+        "- real: 本当に修正すべき誤り・表記ずれか。固有名詞・意図的な表現・引用・すでに解決済みの話なら false。\n"
+        "- suggest: 文脈から見た正しい修正。検知の修正案が文脈に合わない場合は直す"
+        "（例:「正体しました」は招待の話の流れなら「招待しました」が正）。\n"
+        f"- request: {name}さんに送る指摘文（です・ます調・感嘆符は全角！・@メンションや太字は書かない・1〜3文）。{tone}"
+    )
+    out = llm.gpt(prompt, max_tokens=400) or ""
+    mm = re.search(r"\{.*\}", out, re.S)
+    if not mm:
+        return None
+    try:
+        d = json.loads(mm.group(0))
+    except Exception:
+        return None
+    if d.get("real") is False:
+        return {"drop": "context"}
+    if not (d.get("request") or "").strip():
+        return None
+    return {"author": author, "name": name,
+            "suggest": (d.get("suggest") or suggest).strip(), "request": d["request"].strip()}
+
+
 def _permalink(channel: str, ts: str) -> str:
     if not (channel and ts):
         return ""
@@ -98,17 +157,26 @@ def main():
             continue
         if f.get("kind") not in KINDS:
             continue
-        draft = _draft(f, rules)
         iss = f.get("issue", {}) or {}
         link = _permalink(f.get("channel", ""), f.get("msg_ts", ""))
         found = iss.get("found", f.get("task", ""))
         suggest = iss.get("suggest", "")
+        pc = _context_precheck(f, found, suggest)
+        if pc and pc.get("drop"):
+            f["status"] = "rejected_context"  # 文脈精査で棄却（bot投稿・誤検知）＝提案しない
+            continue
+        if pc:
+            tgt_id, tgt_name = pc["author"], pc["name"]
+            draft, suggest = pc["request"], pc["suggest"]
+        else:  # 旧finding・LLM不通＝従来経路（チャンネル固定宛先+Haiku文面）
+            tgt_id, tgt_name = _target(f.get("channel", ""))
+            draft = _draft(f, rules)
         kenchi = f"{found} → {suggest}" if suggest else found
-        tgt_id, tgt_name = _target(f.get("channel", ""))
+        author_note = f"（{tgt_name}さんの投稿）" if pc else ""
         proposal = (
             f"<@{runtime.TODA}>\n"
             f"提案：{KINDJP[f['kind']]}\n"
-            f"対象：{link or f.get('channel', '')}\n"
+            f"対象：{link or f.get('channel', '')}{author_note}\n"
             f"検知：{kenchi}\n\n"
             f"```\n"               # 文面プレビューはコードブロック（メンション/装飾が発火しない＝松永さんに通知も飛ばない）
             f"{tgt_name}\n"
@@ -129,7 +197,7 @@ def main():
             posted += 1
         else:
             print(f"[propose] post failed, leave status=new: kind={f['kind']} ch={f.get('channel')}")
-    changed = posted or any(f.get("status") == "noted" for f in findings)
+    changed = posted or any(f.get("status") in ("noted", "rejected_context") for f in findings)
     if posted:
         runtime.save_json("pending_approvals.json", pending)  # pending を先に＝提案がGO不能になる黒穴を作らない
     if changed:

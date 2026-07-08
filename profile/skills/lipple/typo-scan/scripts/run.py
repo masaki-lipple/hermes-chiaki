@@ -46,7 +46,7 @@ def _gather(ch, since, bots):
         if m["datetime"][:10] != today:
             continue
         if m["ts_float"] > (since or 0) and m["user_id"] not in bots and m["text"].strip():
-            msgs.append(m)
+            msgs.append({**m, "_root": m["ts"]})  # _root=スレッド根（文脈精査・作者宛先の柱1用）
             seen.add(m["ts"])
         maxts = max(maxts, m["ts_float"])
         if m.get("thread_replies"):
@@ -55,7 +55,7 @@ def _gather(ch, since, bots):
                 if r["ts"] in seen or r["ts"] == m["ts"] or r["ts_float"] <= (since or 0) or r["user_id"] in bots:
                     continue
                 if r["text"].strip():
-                    msgs.append(r)
+                    msgs.append({**r, "_root": m["ts"]})
                     seen.add(r["ts"])
                 maxts = max(maxts, r["ts_float"])
     return msgs, maxts
@@ -114,7 +114,9 @@ def main():
                     continue
                 runtime.record_finding("typo", {
                     "channel": ch, "msg_ts": msg["ts"], "msg_dt": msg["datetime"],
-                    "issue": {"found": found, "suggest": suggest}, "excerpt": msg["text"][:80]})
+                    "issue": {"found": found, "suggest": suggest}, "excerpt": msg["text"][:80],
+                    # 柱1（2026-07-07 戸田「文脈よんでほしい」）: 作者＝指摘先・スレッド根＝文脈精査用
+                    "author": msg["user_id"], "thread_root": msg.get("_root") or msg["ts"]})
                 total += 1
         # MAX_MSGS で切り捨てた未スキャン分(最新側)を飛ばさない＝落とした最小 ts の手前までしか進めない
         dropped = msgs[MAX_MSGS:]

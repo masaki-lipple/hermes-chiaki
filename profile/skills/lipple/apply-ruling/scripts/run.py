@@ -223,7 +223,12 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
             report = "GO 了解です。対象スレッドへ投稿しました。"
         if link:
             report += "\n" + link
-        it["status"], it["final_text"] = "awaiting_completion", final
+        if tgt == runtime.TODA:
+            # 戸田さん本人の投稿への軽い指摘（柱3・2026-07-07）＝完了確認・リマインドはしない
+            it["status"], it["completion_ts"] = "completed", nudge_ts
+        else:
+            it["status"] = "awaiting_completion"
+        it["final_text"] = final
         it["nudge_ts"], it["ruling_text"] = nudge_ts, ruling_text
     _save(pend)  # 投稿直後に永続化＝この後の例外でも再投稿しない
     runtime.append_jsonl("rulings.jsonl", {

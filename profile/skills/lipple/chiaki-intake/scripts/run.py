@@ -82,6 +82,8 @@ def _classify_intake(text: str, context: str = "") -> list:
         "- issue: Chiaki AI の不具合・要望（動作の問題/機能追加/変更/バグ）。issue_kind=バグ|変更|新機能|その他。\n"
         "- rule: 言葉のルールを“今後のルール”として覚えるべき指摘。rule_kind="
         "スタイル(声/トーン/温度・例『もっとラフに』『！多すぎ』)|用語(固有名詞や語の統一)|レギュレーション(表記/約物/語尾)。\n"
+        "- retract: Chiaki AI の直前のアクション（修正依頼・リマインド・指摘の投稿）が間違っている・宛先違い・"
+        "不要という指摘（『これは僕あてですね』『この依頼おかしい』『それ違うよ』『いらなかったよ』）。\n"
         "- edit: いま出ている“この投稿そのもの”を今すぐ直す依頼（『この一文消して』『今回直して』『ここ柔らかく』）。\n"
         "  ※Chiaki AI の投稿の表記・整形の指摘（改行・空行・記号・スペース・箇条書きの体裁・重複行など）も edit＝まずその投稿を直す"
         "（2026-07-03 戸田「直してと言っているのに Issue 提案になる」への抜本対応。整形はコード側で出口一括適用済みのため、"
@@ -586,7 +588,11 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
     bills = [c for c in cs if c.get("type") in ("issue", "rule")]
     if bills:  # 1件でも複数でも awaiting（複数は分割起票）
         return _await(items, m, ch, root, bills)
-    typ = cs[0].get("type")  # bills が無い＝単発の edit/question/unclear/none
+    typ = cs[0].get("type")  # bills が無い＝単発の retract/edit/question/unclear/none
+    if typ == "retract":
+        acted = _handle_retract(m, ch, root)
+        _log("retract", ch, root, m)
+        return _mark_done(items, m, ch, root) if acted else 0
     if typ == "edit":
         sym = _bug_symptom(m["text"], ch, root, m["text"])  # バグ症状なら証拠付き issue 化（編集で消さない）
         if sym:
@@ -889,6 +895,46 @@ def _confirm_legacy(it: dict, m: dict, ch: str, root: str) -> int:
     # どの分類にも落ちなかった（空・回答失敗）＝無返信を防ぐ。awaiting は維持して次の返信を待つ。
     it["propose_count"] = it.get("propose_count", 1) + 1
     _reply(ch, root, "うまく汲み取れませんでした。「これでOK」か「却下」、または直したい内容を具体的に教えてもらえますか？")
+    return 1
+
+
+def _handle_retract(m: dict, ch: str, root: str) -> int:
+    """柱2（2026-07-07 戸田「もっと会話をスマートに」）: Chiaki AI の直前のアクションが誤り
+    （宛先違い・内容違い・不要）という指摘への自己訂正。①スレッド内の直近の実質投稿に
+    取り消し注記を編集で追記（削除しない＝記録を残す） ②紐づく裁定を retracted でクローズ
+    ③率直な謝罪と言い直しの返事（GPT・文脈込み）。従来は Issue 提案に逃げて会話が重かった。"""
+    thread = source.read_thread(ch, root)
+    self_tag = f"<@{runtime.CHIAKI_SELF}>"
+    posts = [x for x in thread if x.get("user_id") == runtime.CHIAKI_SELF
+             and not (x.get("text") or "").lstrip().startswith(self_tag)]
+    target = posts[-1] if posts else None
+    if target:
+        source.update_message(ch, target["ts"],
+                              (target.get("text") or "") + "\n\n※この投稿は誤りでした。取り消します。")
+    pend = runtime.load_json("pending_approvals.json", {"items": {}})
+    post_ts = {p.get("ts") for p in posts}
+    closed = 0
+    for it in pend.get("items", {}).values():
+        if it.get("status") in ("pending", "awaiting_completion") and (
+                it.get("source_ts") == root or it.get("nudge_ts") in post_ts):
+            it["status"] = "retracted"
+            closed += 1
+    if closed:
+        runtime.save_json("pending_approvals.json", pend)
+    ans = ""
+    try:
+        from lib import llm
+        convo = "\n".join(f"- {(x.get('user_name') or x.get('user_id') or '?')}: {(x.get('text') or '')[:200]}"
+                          for x in thread[-10:])
+        ans = (llm.gpt(
+            "あなたは Chiaki AI。あなたの直前のアクション（修正依頼など）が誤りだったと指摘されました。\n"
+            f"スレッドのやりとり:\n{convo}\n指摘: {m.get('text') or ''}\n"
+            "1〜3文で率直に謝り、何が正しかったのかを言い直す（です・ます調・感嘆符は全角！・"
+            "@メンションや太字は書かない・言い訳をしない）。テキストのみを返す。",
+            max_tokens=250) or "").strip()
+    except Exception:
+        pass
+    _reply(ch, root, ans or "失礼しました！さきほどの投稿は誤りだったので取り消しました。")
     return 1
 
 

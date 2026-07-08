@@ -75,7 +75,7 @@ def main():
 
     scanned = set()  # thread_broadcast は履歴とスレッドの両方に現れる＝二重検査で同じ提案が2通になるのを防ぐ（監査確定）
 
-    def _scan(msg):
+    def _scan(msg, root):
         nonlocal n_notation
         if msg["ts"] in scanned:
             return
@@ -85,18 +85,20 @@ def main():
             if policy.get("quality_nudges_require_approval", True):
                 runtime.record_finding("notation", {
                     "channel": ch, "msg_ts": msg["ts"], "msg_dt": msg["datetime"],
-                    "issue": issue, "excerpt": msg["text"][:80]})
+                    "issue": issue, "excerpt": msg["text"][:80],
+                    # 柱1（2026-07-07 戸田「文脈よんでほしい」）: 作者＝指摘先・スレッド根＝文脈精査用
+                    "author": msg["user_id"], "thread_root": root})
 
     for m in today_msgs:
         if m["ts_float"] > last_processed and m["user_id"] not in bots:
-            _scan(m)
+            _scan(m, m["ts"])
         max_seen = max(max_seen, m["ts_float"])
         # スレッド返信内の表記も検査（投稿元だけでなくスレッド内も拾う）
         if m.get("thread_replies"):
             for r in source.read_thread(ch, m["ts"]):
                 if r["ts"] == m["ts"] or r["ts_float"] <= last_processed or r["user_id"] in bots:
                     continue
-                _scan(r)
+                _scan(r, m["ts"])
                 max_seen = max(max_seen, r["ts_float"])
 
     t["last_processed_ts"] = max(max_seen, max(m["ts_float"] for m in today_msgs))
