@@ -22,6 +22,11 @@ def _token() -> str:
 
 # 適正工数_DB（種別ごとの実測レンジ・中央値・回数。compute-baselines が毎晩 実測列を反映）
 KOUSU_DB = "5b02889e5af24bd09fcd3b206d43fab6"
+# 社内レギュレーション_DB（コンテンツマーケの正本・2026-07-08 戸田「社内のレギュレーションも調整したい」）
+COMPANY_REG_DB = "2a1b88bf93264ffcaaf5e6608871b5e0"
+# select は既存オプション名のみ送る（未知値は Notion が自動再作成する＝Rule Registry の chiaki 再発事故の教訓）
+COMPANY_REG_CATEGORIES = ("用字・表記", "数字・英字", "記号・約物", "文末・語尾", "表現・NG", "体裁・構成")
+COMPANY_REG_SCENES = ("社内コミュニケーション", "記事・コンテンツ")
 
 
 def _api(method: str, path: str, body: dict | None = None):
@@ -66,6 +71,31 @@ def query_database_titles(db_id: str) -> dict:
             break
         cursor = res.get("next_cursor")
     return out
+
+
+def create_company_regulation(rule: str, content: str, category: str = "用字・表記",
+                              wrong: str = "", right: str = "", basis: str = "",
+                              scenes: list | None = None) -> str | None:
+    """社内レギュレーション_DB へ1件登録（種別=Lipple・ステータス=有効固定）。URL を返す。
+    category/scenes は既存オプションのみ許可（未知値は既定へ丸める＝strayオプション防止）。"""
+    if category not in COMPANY_REG_CATEGORIES:
+        category = "用字・表記"
+    scenes = [s for s in (scenes or []) if s in COMPANY_REG_SCENES] or list(COMPANY_REG_SCENES)
+    props = {
+        "ルール": {"title": [{"text": {"content": (rule or "（無題）").strip()[:200]}}]},
+        "ルール内容": _rt(content),
+        "カテゴリ": {"select": {"name": category}},
+        "種別": {"select": {"name": "Lipple"}},
+        "ステータス": {"select": {"name": "有効"}},
+        "適用シーン": {"multi_select": [{"name": s} for s in scenes]},
+    }
+    if wrong:
+        props["誤例"] = _rt(wrong)
+    if right:
+        props["正例"] = _rt(right)
+    if basis:
+        props["根拠"] = _rt(basis)
+    return _create_page(COMPANY_REG_DB, props, "notion-company-reg")
 
 
 def update_page_props(page_id: str, props: dict) -> bool:
