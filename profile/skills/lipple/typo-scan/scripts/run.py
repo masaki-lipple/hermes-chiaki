@@ -5,8 +5,10 @@
 1回の Haiku 呼び出しで当日新着メッセージからまとめて高精度に抽出する。
 固有名詞・製品名・人名・社内既知用語・意図的な英字大小は誤字としない（誤検知を強く避ける）。
 検知は findings(kind=typo) に積み、propose が #8902 へ承認提案（以降は notation と同じループ）。
-対象: #5035 の当日新着（投稿元＋スレッド返信。bot/自分は除外）。cron: 50 17 / 30 18（平日）。
-辞書層と重複する found はスキップ（二重提案防止）。cursor は typo_cursor.json（obs-batch と別ファイル）。
+対象: bot が参加する業務チャンネル全部の当日新着（投稿元＋スレッド返信。bot/自分は除外）。
+新しいクライアントチャンネル（a0xx…）は bot を招待するだけで自動的に監視対象に入る（ゼロコンフィグ）。
+cron: 50 17 / 30 18（平日）。辞書層と重複する found はスキップ（二重提案防止）。
+cursor は typo_cursor.json（obs-batch と別ファイル）。
 """
 import json
 import os
@@ -16,8 +18,10 @@ from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
 from lib import observe, runtime, source  # noqa: E402
 
-CHANNELS = [runtime.CH_YU_PDCA]  # 必要なら #a027 を追加
-MAX_MSGS = 40                    # 1回の Haiku に渡す最大件数
+# 誤字監視の対象外＝chiaki 自身の発信ch（#5902/#8902）。それ以外の参加chは自動で対象
+# （#5035 松永PDCA・a025/a027/a035…クライアントch）。戸田さんの対話や chiaki の投稿は誤字検知しない。
+_EXCLUDE = {runtime.CH_CHIAKI_PDCA, runtime.CH_CHIAKI_MGMT}
+MAX_MSGS = 40                    # 1回の Haiku に渡す最大件数（チャンネルごと）
 
 
 def _rules():
@@ -91,9 +95,15 @@ def main():
     known = _known(rules)
     cur = runtime.load_json("typo_cursor.json", {})
     total = 0
-    for ch in CHANNELS:
-        since = cur.get(ch, 0.0)
-        msgs, maxts = _gather(ch, since, bots)
+    channels = [c["id"] for c in source.list_bot_channels()
+                if c.get("id") and c["id"] not in _EXCLUDE]
+    for ch in channels:
+        since = cur.get(ch, 0.0)  # 新chは since=0＝_gather の当日限定で当日分のみ（過去への遡及なし）
+        try:
+            msgs, maxts = _gather(ch, since, bots)
+        except Exception as e:
+            print(f"[typo-scan] gather failed ch={ch}: {e}")  # ch単位で失敗隔離
+            continue
         if msgs:
             for h in _detect(msgs[:MAX_MSGS], known):
                 try:
