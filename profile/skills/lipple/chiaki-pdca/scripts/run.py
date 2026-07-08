@@ -71,12 +71,25 @@ def _close_digest(date: str) -> dict:
             "open": sum(1 for it in pend.values() if it.get("status") in ("pending", "awaiting_completion"))}
 
 
-_OBSERVED = (runtime.CH_YU_PDCA, runtime.CH_NICHIJI)  # 始業報告に列挙する観測対象（#5035 松永さん／#a027 日本自動ドア）
+# 始業報告に列挙しない＝chiaki 自身の発信ch（#5902/#8902）。それ以外の参加chは観測対象として列挙。
+# typo-scan の _EXCLUDE と揃える＝「監視しているch」と「朝に列挙するch」を一致させる。
+_OBSERVE_EXCLUDE = {runtime.CH_CHIAKI_PDCA, runtime.CH_CHIAKI_MGMT}
+
+
+def _observed_channels() -> list[str]:
+    """観測対象＝bot が参加する業務チャンネル全部（新しく招待されたchも自動で含む）。
+    取得失敗時は最低限 #5035 だけ返す（朝の報告を空にしない）。"""
+    try:
+        chs = [c["id"] for c in source.list_bot_channels()
+               if c.get("id") and c["id"] not in _OBSERVE_EXCLUDE]
+        return chs or [runtime.CH_YU_PDCA]
+    except Exception:
+        return [runtime.CH_YU_PDCA]
 
 
 def _morning_text() -> str:
     """始業のあいさつ（戸田テンプレ・観測チャンネルをリンクで列挙・決定論／終業・毎時とは別形式）。"""
-    obs = "\n".join(f"<#{c}>" for c in _OBSERVED)
+    obs = "\n".join(f"<#{c}>" for c in _observed_channels())
     return ("おはようございます。\n"
             "本日の観測を開始します。\n\n"
             "いくつかのチャンネルを観測し、1時間ルール・表記誤字・予実・停滞を見ます。\n\n"
