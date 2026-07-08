@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime, source, observe  # noqa: E402
+from lib import runtime, source, observe, notion  # noqa: E402
 
 REPO = os.environ.get("HERMES_CODEX_REPO") or os.path.expanduser("~/src/hermes-chiaki")
 WORK = os.environ.get("HERMES_CODEX_WORK") or os.path.expanduser("~/src/hermes-chiaki-codex")
@@ -317,6 +317,14 @@ def main():
     st["days"][today] = st["days"].get(today, 0) + 1
     st["days"] = {d: n for d, n in st["days"].items() if d >= today[:8] + "01"}  # 当月分だけ保持
     runtime.save_json("codex_runner.json", st)
+
+    if res["ok"] and res["changed"] and item.get("issue_url"):
+        # 履歴管理の正本＝Issue_DB（2026-07-08 戸田）: 実装完了で「レビュー待ち」+ブランチを記録。
+        # Claude Code のレビューで 採用→完了／不採用→未対応に戻す。失敗しても報告は止めない。
+        try:
+            notion.update_issue(item["issue_url"], status="レビュー待ち", branch=branch)
+        except Exception as e:
+            print(f"[codex-runner] issue status update failed: {e}")
 
     issue_line = f"\n{item['issue_url']}" if item.get("issue_url") else ""
     if res["ok"] and res["changed"]:
