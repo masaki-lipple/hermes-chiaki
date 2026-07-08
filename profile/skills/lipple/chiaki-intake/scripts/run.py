@@ -647,11 +647,16 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str):
 _CODEX_RE = re.compile(r"codex", re.I)
 
 
-def _maybe_enqueue_codex(it: dict, m: dict, ch: str, root: str, ok: list) -> str:
-    """依頼文または確認返信に「Codex」があれば、起票済み issue を codex-runner のキューへ積む。
+def _maybe_enqueue_codex(it: dict, m: dict, ch: str, root: str, ok: list, force=None) -> str:
+    """起票済み issue を codex-runner のキューへ積む。force=True は無条件（会話エージェントが
+    「コード変更の依頼」と判断＝2026-07-08 戸田「その場でコードを編集していけないの？」以降の既定）、
+    force=False は積まない（「起票だけ」）、None は従来の「Codex」言及トリガ（legacy経路用）。
     権限＝確認ターンに到達できるのは戸田さんのみ＋runner 側でも requested_by を再検証（二重ゲート）。
     返り値は返信に足す一言（積まなければ空文字）。"""
-    if not _CODEX_RE.search((it.get("mention_text") or "") + " " + (m.get("text") or "")):
+    if force is False:
+        return ""
+    if force is not True and not _CODEX_RE.search(
+            (it.get("mention_text") or "") + " " + (m.get("text") or "")):
         return ""
     issues = [(p, u) for p, u in ok if p.get("type") == "issue"]
     if not issues:
@@ -738,6 +743,8 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
         '"instruction": "", "company": {"rule": "", "content": "", "category": "", "wrong": "", "right": ""}}\n'
         "- file: 提示中の案の登録を承認した（OK/はい/登録して/Issueに追加で 等。追加の依頼や雑談が同居していても"
         "承認が含まれていれば file）。reply には登録した旨＋同居していた話への応答（登録URLはシステムが後ろに付ける）。"
+        'issueの場合は "codex": true/false も返す＝コードの修正・変更・機能追加なら true（そのままCodexが実装まで進める・既定）、'
+        "戸田さんが起票だけを求めた場合やコード外の作業（Notionの手作業・運用の相談等）は false。"
         "返信に『新しく起票すべき別の指摘』が含まれる場合だけ proposals に次の案を入れる"
         '（各: {"type":"issue|rule","issue_kind":"バグ|変更|新機能|その他","rule_kind":"用語|レギュレーション|スタイル",'
         '"要約":"","詳細":"","routine":false}）。\n'
@@ -836,7 +843,11 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
             extra, it["root_edited"] = "\n指摘のあった投稿も直しました。", True
     if urls and not ng:  # 全件成功
         it["status"], it["page_urls"] = "filed", urls
-        codex_note = _maybe_enqueue_codex(it, m, ch, root, ok)
+        # issue のコード変更は既定でそのまま Codex 実装へ（エージェントの codex 判断・未指定は issue なら true）
+        force = d.get("codex")
+        if force is None:
+            force = any(p.get("type") == "issue" for p, _ in ok) or None
+        codex_note = _maybe_enqueue_codex(it, m, ch, root, ok, force=force)
         _reply(ch, root, reply + extra + codex_note + "\n" + "\n".join(urls))
         _log("filed", ch, root, m, urls=urls,
              routine=any(bool(p.get("routine")) for p, _ in ok),
