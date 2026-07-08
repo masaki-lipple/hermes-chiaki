@@ -20,6 +20,63 @@ def _token() -> str:
     return os.environ.get("NOTION_INTEGRATION_TOKEN", "")
 
 
+# 適正工数_DB（種別ごとの実測レンジ・中央値・回数。compute-baselines が毎晩 実測列を反映）
+KOUSU_DB = "5b02889e5af24bd09fcd3b206d43fab6"
+
+
+def _api(method: str, path: str, body: dict | None = None):
+    """Notion API 呼び出し（GET/POST/PATCH）。トークン無・失敗時は None（握りつぶしてログ）。"""
+    token = _token()
+    if not token:
+        return None
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        f"https://api.notion.com/v1/{path}", data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION,
+                 "Content-Type": "application/json; charset=utf-8"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[notion _api] {method} {path} failed: {e}")
+        return None
+
+
+def query_database_titles(db_id: str) -> dict:
+    """DB の全ページを {title文字列: {"id":..., "props":生プロパティ}} で返す（ページング対応）。
+    title プロパティ名は問わず type=='title' の列を採用。失敗/未共有時は {}。"""
+    out, cursor = {}, None
+    while True:
+        body = {"page_size": 100}
+        if cursor:
+            body["start_cursor"] = cursor
+        res = _api("POST", f"databases/{db_id}/query", body)
+        if not res:
+            break
+        for pg in res.get("results", []):
+            props = pg.get("properties", {})
+            title = ""
+            for v in props.values():
+                if v.get("type") == "title":
+                    title = "".join(t.get("plain_text", "") for t in v.get("title", []))
+                    break
+            if title:
+                out[title] = {"id": pg.get("id"), "props": props}
+        if not res.get("has_more"):
+            break
+        cursor = res.get("next_cursor")
+    return out
+
+
+def update_page_props(page_id: str, props: dict) -> bool:
+    """既存ページのプロパティを更新（PATCH）。props は Notion API 形式。成功で True。"""
+    if not _token():
+        print(f"[DRY notion-update] page={page_id[:8]} props={list(props)}")
+        return False
+    res = _api("PATCH", f"pages/{page_id}", {"properties": props})
+    return bool(res)
+
+
 def _prop_summary(v: dict):
     if "title" in v:
         return v["title"][0]["text"]["content"]
