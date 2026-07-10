@@ -8,6 +8,7 @@ import glob
 import json
 import os
 import sys
+import time
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
 from lib import observe, runtime, notion  # noqa: E402
@@ -18,6 +19,21 @@ def _m(h):
     return int(round((h or 0) * 60))
 
 
+def _query_rows_with_retry(db_id: str, waits=(30, 60)) -> dict:
+    """query が空なら間隔を空けて再試行して返す（2026-07-09 Notion API 一時エラーで
+    実測反映が1晩丸ごとスキップした実例＝翌日の照会は正常）。notion._api は失敗時 None
+    ＝「本当に空のDB」と「一時障害」を呼び側で区別できないため、夜間バッチはここで粘る。
+    恒常的な未共有/権限切れでも余計に待つのは最大90秒（cron なので許容）。"""
+    rows = notion.query_database_titles(db_id)
+    for i, w in enumerate(waits):
+        if rows:
+            break
+        print(f"[compute-baselines] DB query empty -> {w}s待って再試行({i + 1}/{len(waits)})")
+        time.sleep(w)
+        rows = notion.query_database_titles(db_id)
+    return rows
+
+
 def _push_to_notion(bl: dict) -> None:
     """適正工数_DB の既存行に実測を反映（2026-07-07 戸田「全然更新されていない」＝反映ジョブが未実装だった）。
     行の新規作成はしない（ページ新規作成は戸田さんの許可制）。DBに無い種別はログのみ。
@@ -25,9 +41,9 @@ def _push_to_notion(bl: dict) -> None:
     if not notion._token():
         print("[compute-baselines] no notion token -> skip DB push")
         return
-    rows = notion.query_database_titles(notion.KOUSU_DB)
+    rows = _query_rows_with_retry(notion.KOUSU_DB)
     if not rows:
-        print("[compute-baselines] DB query empty -> skip (共有/権限を確認)")
+        print("[compute-baselines] DB query empty -> skip (再試行後も空。共有/権限またはNotion障害を確認)")
         return
     today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
     by_kind = bl.get("by_kind", {})
