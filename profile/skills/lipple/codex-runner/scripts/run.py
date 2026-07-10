@@ -340,9 +340,16 @@ def main():
                 f"Codexの報告：\n{_tail(res['output'])}\n\n"
                 f"続きの指示・質問はこのスレッドでどうぞ。{issue_line}")
     else:
-        body = (f"<@{runtime.TODA}>\n報告：Codex実装（失敗）\n内容：{summary}\n\n"
-                f"Codexの実行が失敗しました。このスレッドで指示をもらえれば再試行します。\n\n"
-                f"{_tail(res['output'])}{issue_line}")
+        out_l = (res.get("output") or "").lower()
+        if "usage limit" in out_l or "rate limit" in out_l:
+            # 生のエラー羅列を貼らず、事象と代替手段を一言で（2026-07-10 実バグ: 上限エラーの垂れ流し）
+            body = (f"<@{runtime.TODA}>\n報告：Codex実装（利用上限）\n内容：{summary}\n\n"
+                    f"ChatGPTプランのCodex利用上限に達しているため、実装できませんでした。"
+                    f"上限が回復するまでは、この依頼はClaude Codeが引き受けます（Issueは残っています）。{issue_line}")
+        else:
+            body = (f"<@{runtime.TODA}>\n報告：Codex実装（失敗）\n内容：{summary}\n\n"
+                    f"Codexの実行が失敗しました。このスレッドで指示をもらえれば再試行します。\n\n"
+                    f"{_tail(res['output'])}{issue_line}")
 
     if cont and item.get("thread"):
         source.post_thread_reply(CH, item["thread"], body)

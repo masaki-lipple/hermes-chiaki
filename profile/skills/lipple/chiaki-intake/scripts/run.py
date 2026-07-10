@@ -433,6 +433,10 @@ def _candidates(cur: dict, items: dict):
             for r in source.read_thread(mgmt, m["ts"]):
                 if (r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_m
                         and (not need_mention or MENTION in (r.get("text") or ""))):
+                    # 裁定スレッドでメンション付きでも、裸の裁定語（GO/OK/却下等）は apply-ruling の領分
+                    # ＝intake が「了解です！動きます」等を重ねない（2026-07-10 実バグ: GO の二重応答）
+                    if need_mention and _is_bare_ruling(r.get("text") or ""):
+                        continue
                     cand.append((r, m["ts"], mgmt, ""))
     since_p = float(cur.get(pdca, 0.0))
     for m in source.read_recent(pdca, limit=50):
@@ -468,6 +472,18 @@ def _candidates(cur: dict, items: dict):
 
 
 _FILED_FOLLOWUP_SEC = 24 * 3600  # 起票完了後もこの間はスレッドの続きを会話エージェントで受ける
+
+
+_RULING_WORDS = _GO | {"go!", "却下", "やめ", "なしで", "見送り", "ボツ", "流して"}
+
+
+def _is_bare_ruling(text: str) -> bool:
+    """メンションを除いた本文が裁定語（GO/OK/却下…）だけか＝apply-ruling が処理する発話。"""
+    t = re.sub(r"<@U[A-Z0-9]+>", "", text or "").strip(" 　。、！!.?？\n\r\t")
+    if not t:
+        return False
+    tokens = [x for x in re.split(r"[、。！!\?？\s　]+", t) if x]
+    return bool(tokens) and all(tok.lower() in _RULING_WORDS for tok in tokens)
 
 
 def _find_awaiting(items: dict, ch: str, root: str, msg_ts: str):

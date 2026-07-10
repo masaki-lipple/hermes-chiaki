@@ -56,7 +56,7 @@ def _context_precheck(f: dict, found: str, suggest: str):
     convo = "\n".join(
         f"- {NAMES.get(x.get('user_id'), x.get('user_name') or '参加者')}: {(x.get('text') or '')[:200]}"
         for x in thread[-15:]) or "（スレッドなし）"
-    name = NAMES.get(author, "担当者")
+    name = NAMES.get(author) or source.user_display_name(author) or "担当者"
     light = author == runtime.TODA
     tone = ("相手は投稿の作者本人で上長の戸田さんなので、依頼調にせず"
             "「〜の誤字でしょうか？よければ直しておいてください！」程度の軽い指摘にする。報告のお願いは書かない。"
@@ -172,7 +172,8 @@ def main():
             tgt_id, tgt_name = _target(f.get("channel", ""))
             draft = _draft(f, rules)
         kenchi = f"{found} → {suggest}" if suggest else found
-        author_note = f"（{tgt_name}さんの投稿）" if pc else ""
+        # 投稿者は別行に（URL直後に全角かっこを繋げると Slack のリンク解釈に食い込む・2026-07-10 実バグ）
+        author_note = f"\n投稿者：{tgt_name}さん" if pc else ""
         proposal = (
             f"<@{runtime.TODA}>\n"
             f"提案：{KINDJP[f['kind']]}\n"

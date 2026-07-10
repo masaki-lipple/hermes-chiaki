@@ -123,6 +123,23 @@ def list_bot_channels() -> list[dict]:
     return out
 
 
+_USER_NAME_CACHE: dict = {}
+
+
+def user_display_name(user_id: str) -> str:
+    """users.info の real_name（プロセス内キャッシュ・失敗時は空文字）。
+    新しいワーカーch対応＝IDマップに無い人を「担当者」呼ばわりしない（2026-07-10 戸田指摘）。"""
+    if not user_id or FIXTURES or not _TOKEN:
+        return ""
+    if user_id in _USER_NAME_CACHE:
+        return _USER_NAME_CACHE[user_id]
+    res = _api_get("users.info", {"user": user_id})
+    u = res.get("user") or {}
+    name = (u.get("profile") or {}).get("real_name") or u.get("real_name") or ""
+    _USER_NAME_CACHE[user_id] = name
+    return name
+
+
 def read_thread(channel_id: str, thread_ts: str) -> list[dict]:
     """スレッド返信（根を含む）。stall の human_replies 算出に使う。"""
     if FIXTURES:

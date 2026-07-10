@@ -300,9 +300,14 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
         it["status"], it["completion_ts"] = "completed", done_ts
         _save(pend)  # お礼投稿直後に永続化＝以降の例外で二重お礼しない
         link = _permalink(src_ch, src_ts, src_ts)  # 該当箇所（修正された元メッセージ）への直リンク
+        # 対象者名はハードコードしない（多チャンネル化で対象は松永さんとは限らない＝
+        # 2026-07-10 実バグ: 松下さんの修正を「松永さんが修正を完了しました」と誤通知）
+        who = it.get("target_name") or ""
+        if not who or who == "担当者":
+            who = source.user_display_name(tgt) or "対象者"
         source.post_thread_reply(
             runtime.CH_CHIAKI_MGMT, tts,
-            f"<@{runtime.TODA}>\n松永さんが修正を完了しました。\n\n{link}\n\nーーーーー")
+            f"<@{runtime.TODA}>\n{who}さんが修正を完了しました。\n\n{link}\n\nーーーーー")
         runtime.append_jsonl("rulings.jsonl", {
             "ts": runtime.now_ts(), "thread_ts": tts, "verdict": "completed",
             "kind": it.get("finding_kind", ""), "completion_ts": done_ts})
