@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime, source, observe, notion  # noqa: E402
+from lib import runtime, source, observe, notion, convo  # noqa: E402
 
 REPO = os.environ.get("HERMES_CODEX_REPO") or os.path.expanduser("~/src/hermes-chiaki")
 WORK = os.environ.get("HERMES_CODEX_WORK") or os.path.expanduser("~/src/hermes-chiaki-codex")
@@ -173,7 +173,16 @@ def _process_threads() -> None:
             llm.reset_used()
         except Exception:
             pass
-        act = _classify_thread_reply(t, text)
+        # 判断は会話コア（Phase A+B＝統一文脈パッケージ）。不成立時は従来の分類へフォールバック
+        act = None
+        cd = convo.decide(CH, tts, {"text": text}, mode="codex_thread")
+        if cd:
+            amap = {"codex_continue": "continue", "deploy_request": "deploy", "answer": "chat"}
+            act = {"action": amap.get(cd["action"], cd["action"]),
+                   "reply": cd.get("reply") or "", "instruction": cd.get("instruction") or "",
+                   "company": cd.get("company") or {}}
+        if not act:
+            act = _classify_thread_reply(t, text)
         if not act:
             # 分類不能（LLM全滅など）は last_seen を進めず次回リトライ＝黙殺しない
             print(f"[codex-runner] classify failed {tts}")
@@ -182,6 +191,19 @@ def _process_threads() -> None:
         changed = True
         action = act.get("action")
         reply = (act.get("reply") or "").strip()
+        if action == "retract":
+            _reply(tts, reply or "失礼しました！さきほどの投稿は誤りでした。")
+            print(f"[codex-runner] thread {tts} -> retract")
+            continue
+        if action == "company_rule":
+            c = act.get("company") or {}
+            url = notion.create_company_regulation(
+                rule=c.get("rule") or "", content=c.get("content") or "",
+                category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "")
+            _reply(tts, (reply + ("\n" + url if url else "")) if url else
+                   "社内レギュレーション_DBへの登録に失敗しました。共有・権限を確認してもらえますか？")
+            print(f"[codex-runner] thread {tts} -> company_rule")
+            continue
         if action == "continue":
             # 内容行には「今回の指示」を出す（元の件名のままだと報告が実作業とズレて見える）
             runtime.append_jsonl("codex_queue.jsonl", {
@@ -296,6 +318,20 @@ def main():
     if cont and item.get("thread") in reg_items:
         prev_output = reg_items[item["thread"]].get("last_output") or ""
     summary = (item.get("summary") or "（無題）").strip()
+    # 利用上限中は空実行（30分タイムアウト）せず即案内（12時間で自動再試行・成功で解除）
+    quota = runtime.load_json("codex_quota.json", {})
+    if quota.get("blocked") and runtime.now_ts() - float(quota.get("detected_ts", 0)) < 12 * 3600:
+        st["done"][key] = {"status": "quota", "ts": runtime.now_ts()}
+        runtime.save_json("codex_runner.json", st)
+        note = (f"<@{runtime.TODA}>\n報告：Codex実装（利用上限）\n内容：{summary}\n\n"
+                f"ChatGPTプランのCodex利用上限に到達中のため、実装はClaude Codeが引き受けます"
+                f"（Issueは残っています）。" + (f"\n{item['issue_url']}" if item.get("issue_url") else ""))
+        if item.get("thread"):
+            source.post_thread_reply(CH, item["thread"], note)
+        else:
+            _post(note)
+        print("[codex-runner] quota blocked -> skip run")
+        return
     # 会話スレッド発の依頼＝進捗も完了もそのスレッドへ（2026-07-03 戸田「進捗を同じスレッド内で報告させて」）
     origin_thread = "" if cont else (item.get("thread") or "")
     if origin_thread:
@@ -317,6 +353,8 @@ def main():
     st["days"][today] = st["days"].get(today, 0) + 1
     st["days"] = {d: n for d, n in st["days"].items() if d >= today[:8] + "01"}  # 当月分だけ保持
     runtime.save_json("codex_runner.json", st)
+    if res["ok"] and runtime.load_json("codex_quota.json", {}).get("blocked"):
+        runtime.save_json("codex_quota.json", {})  # 実行が通った＝上限解除
 
     if res["ok"] and res["changed"] and item.get("issue_url"):
         # 履歴管理の正本＝Issue_DB（2026-07-08 戸田）: 実装完了で「レビュー待ち」+ブランチを記録。
@@ -343,6 +381,8 @@ def main():
         out_l = (res.get("output") or "").lower()
         if "usage limit" in out_l or "rate limit" in out_l:
             # 生のエラー羅列を貼らず、事象と代替手段を一言で（2026-07-10 実バグ: 上限エラーの垂れ流し）
+            # 上限フラグを保存＝会話コアが「Codexは当面不可」を知って正直に話せる+次回以降の空実行を防ぐ
+            runtime.save_json("codex_quota.json", {"blocked": True, "detected_ts": runtime.now_ts()})
             body = (f"<@{runtime.TODA}>\n報告：Codex実装（利用上限）\n内容：{summary}\n\n"
                     f"ChatGPTプランのCodex利用上限に達しているため、実装できませんでした。"
                     f"上限が回復するまでは、この依頼はClaude Codeが引き受けます（Issueは残っています）。{issue_line}")

@@ -21,7 +21,7 @@ import time
 from collections import Counter
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import observe, runtime, source, notion  # noqa: E402
+from lib import observe, runtime, source, notion, convo  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
 MENTION = f"<@{runtime.CHIAKI_SELF}>"
@@ -534,12 +534,12 @@ def _log(event: str, ch: str = "", root: str = "", m: dict = None, **extra) -> N
         print(f"[intake] log failed: {e}")
 
 
-def _await(items: dict, m: dict, ch: str, root: str, proposals: list) -> int:
+def _await(items: dict, m: dict, ch: str, root: str, proposals: list, reply_text: str = "") -> int:
     items[m["ts"]] = {"status": "awaiting_confirm", "channel": ch, "thread_root": root,
                       "mention_ts": m["ts"], "mention_text": m["text"],
                       "permalink": _permalink(ch, m["ts"], root), "proposals": proposals,
                       "proposed_at": runtime.now_ts(), "last_seen_ts": m["ts"], "propose_count": 1}
-    _reply(ch, root, _propose_text(proposals))
+    _reply(ch, root, reply_text or _propose_text(proposals))  # 会話コアの自然な提示文を優先・無ければ定型
     _log("propose", ch, root, m,
          分類=[{"type": p.get("type"), "kind": p.get("issue_kind") or p.get("rule_kind") or "",
                "要約": (p.get("要約") or "")[:100], "routine": bool(p.get("routine"))} for p in proposals])
@@ -608,9 +608,66 @@ def _smalltalk(text: str) -> str:
         return fb
 
 
+def _propose_agent(m: dict, ch: str, root: str, items: dict):
+    """初回応対の会話エージェント（Phase A+B・2026-07-10 戸田「根本として会話が自然じゃない」）。
+    会話コアが文脈（スレッド全文＋自分の状態・行動の事実）を読んでから、提案・編集・訂正・
+    社内DB登録・回答・静観を一括判断。提示文も文脈から生成＝「登録してもいいですか？」の紋切り廃止。
+    出力不正・LLM不通は None＝従来の分類ロジックへ。"""
+    d = convo.decide(ch, root, m, mode="initial")
+    if not d:
+        return None
+    action = d.get("action")
+    reply = d.get("reply") or ""
+    if action == "propose":
+        bills = _valid_agent_bills(d.get("proposals"))
+        if not bills:
+            return None
+        return _await(items, m, ch, root, bills, reply_text=reply)
+    if action == "retract":
+        acted = _handle_retract(m, ch, root)
+        _log("retract", ch, root, m)
+        return _mark_done(items, m, ch, root) if acted else 0
+    if action == "edit_post":
+        sym = _bug_symptom(m["text"], ch, root, m["text"])  # バグ症状なら証拠付き issue 化（編集で消さない）
+        if sym:
+            return _await(items, m, ch, root, [sym])
+        st = _maybe_edit_root(ch, root, d.get("instruction") or m["text"], m["text"])
+        _reply(ch, root, reply if st == "edited" else _EDIT_MSG[st])
+        _log("edit", ch, root, m, 結果=st)
+        return _mark_done(items, m, ch, root)
+    if action == "company_rule":
+        c = d.get("company") or {}
+        url = notion.create_company_regulation(
+            rule=c.get("rule") or "", content=c.get("content") or "",
+            category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "",
+            basis=f"戸田さん指示（Slack・{dt.datetime.now(JST).strftime('%Y-%m-%d')}）")
+        if url:
+            _reply(ch, root, reply, url)
+            _log("company_rule", ch, root, m, url=url)
+        else:
+            _reply(ch, root, "社内レギュレーション_DBへの登録に失敗しました。"
+                             "NotionでHermes Agentへの共有・権限を確認してもらえますか？")
+        return _mark_done(items, m, ch, root)
+    if action == "answer":
+        _reply(ch, root, reply)
+        _log("answer", ch, root, m, 回答=reply[:200])
+        return _mark_done(items, m, ch, root)
+    if action == "silent":
+        # メンション付きの呼びかけを無言にはしない（無視に見える＝2026-07-02 監査）
+        if MENTION in (m.get("text") or ""):
+            return None
+        _log("silent", ch, root, m)
+        return _mark_done(items, m, ch, root)
+    return None
+
+
 def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
     if m["ts"] in items:  # 既に提案/起票/処理済みの同一メンション＝再処理時に二重投稿しない（冪等）
         return 0
+    r = _propose_agent(m, ch, root, items)  # 会話コア（Phase A+B）が主経路
+    if r is not None:
+        return r
+    print("[intake] propose agent fallback -> legacy classify")
     cs = _classify_intake(m["text"], _thread_context(ch, root, m["ts"]))
     if not cs:
         return 0
@@ -723,74 +780,48 @@ def _handle_go_extra(it: dict, m: dict, ch: str, root: str, filed_bills: list) -
     # none / unclear → 起票報告のみで完結
 
 
+def _valid_agent_bills(raw) -> list:
+    """会話コアが返した起票案の検証（type/要約必須・既知kindへ正規化）。"""
+    outp = []
+    for c in raw or []:
+        if isinstance(c, dict) and c.get("type") in ("issue", "rule") and (c.get("要約") or "").strip():
+            outp.append(_norm_item({**c, "確信度": c.get("確信度", 0.9)}))
+    return [c for c in outp if c.get("type") in ("issue", "rule")]
+
+
 def _confirm_agent(it: dict, m: dict, ch: str, root: str):
-    """確認ターンの会話エージェント（2026-07-03 戸田「会話の主導権をGPTに渡す」）。
-    GPT 5.5 にスレッド履歴・提案中の内容・修正報告の知識・アクション一覧を渡し、
-    返事とアクションを一括で決めさせる＝口はGPT。実行は決定論ゲートのまま＝手は決定論
-    （起票は保存済み/検証済みの提案のみ・投稿編集は _maybe_edit_root・Codex起動は
-    _maybe_enqueue_codex・権限/冪等性は従来どおり）。出力が壊れていたら None＝従来ロジックへ。"""
-    try:
-        from lib import llm
-    except Exception:
-        return None
+    """確認ターンの会話エージェント。判断は会話コア（lib/convo＝統一文脈パッケージ＋統一アクション・
+    Phase A+B 2026-07-10）、実行はここの決定論ゲート（起票は検証済みの提案のみ・編集は _maybe_edit_root・
+    Codexは _maybe_enqueue_codex・権限/冪等性は従来どおり）。出力が壊れていたら None＝従来ロジックへ。"""
     proposals = it.get("proposals") or ([it["proposal"]] if it.get("proposal") else [])
     bills = [p for p in proposals if p.get("type") in ("issue", "rule")]
     filed = it.get("status") == "filed"
-    thread = source.read_thread(ch, root)
-    convo = "\n".join(f"- {(x.get('user_name') or x.get('user_id') or '?')}: {(x.get('text') or '')[:250]}"
-                      for x in thread[-15:])
     count = it.get("propose_count", 1)
-    plist = json.dumps([{k: p.get(k) for k in ("type", "issue_kind", "rule_kind", "要約", "詳細", "routine")}
-                        for p in bills], ensure_ascii=False) if bills else "（まだ案が定まっていない）"
-    state = "登録済み（このスレッドの続きの会話。file は使わない＝二重登録になる）" if filed else "確認待ち"
-    prompt = (
-        "あなたは Chiaki AI（Lipple の業務観測AI）。#8902 で戸田さんと会話しながら、指摘の起票を進めています。\n"
-        f"案の状態: {state}\n"
-        f"起票案: {plist}\n"
-        f"再提示回数: {count}回目（4回を超えたら再提案せず、登録か見送りの判断を仰ぐ）\n"
-        f"このスレッドのやりとり:\n{convo}\n"
-        f"\n最近の修正報告（Chiaki AI 自身の不具合と直した内容の記録・新しい順）:\n{_fix_reports()}\n"
-        f"\n戸田さんの新しい返信: {m.get('text') or ''}\n\n"
-        "あなたが書き込めるNotion: ①Chiaki AIのRule Registry（自分の言葉のルール） ②Issue_DB（不具合バックログ） "
-        "③社内レギュレーション_DB（コンテンツマーケの正本）。それ以外のDB・ページへの登録を頼まれたら、"
-        "権限（共有）が無いことを正直に伝え、NotionでHermes Agentに共有してもらえれば対応できると案内する。\n"
-        "返事（reply）と、取るアクション（action）を決めて JSON のみで返す:\n"
-        '{"action": "file|revise|cancel|edit_post|answer_only|company_rule", "reply": "", "proposals": [], '
-        '"instruction": "", "company": {"rule": "", "content": "", "category": "", "wrong": "", "right": ""}}\n'
-        "- file: 提示中の案の登録を承認した（OK/はい/登録して/Issueに追加で 等。追加の依頼や雑談が同居していても"
-        "承認が含まれていれば file）。reply には登録した旨＋同居していた話への応答（登録URLはシステムが後ろに付ける）。"
-        'issueの場合は "codex": true/false も返す＝コードの修正・変更・機能追加なら true（そのままCodexが実装まで進める・既定）、'
-        "戸田さんが起票だけを求めた場合やコード外の作業（Notionの手作業・運用の相談等）は false。"
-        "返信に『新しく起票すべき別の指摘』が含まれる場合だけ proposals に次の案を入れる"
-        '（各: {"type":"issue|rule","issue_kind":"バグ|変更|新機能|その他","rule_kind":"用語|レギュレーション|スタイル",'
-        '"要約":"","詳細":"","routine":false}）。\n'
-        "- revise: 案の内容・振り分けの変更指示（『それRuleね』『要約はこうして』）。proposals に修正版の全件を入れ、"
-        "reply で新しい案の中身を具体的に示して確認を求める。\n"
-        "- cancel: 却下・見送り（『やめて』『いらない』）。\n"
-        "- edit_post: 特定の投稿そのものを直す依頼。instruction に直し方を具体的に。\n"
-        "- answer_only: 質問・雑談・情報共有＝起票の判断はまだ。reply で普通に答える/応じる（『なぜ』への質問は"
-        "上の修正報告の記録に基づいて『こういうバグでした・こう直しました』と答える。記録に無ければ正直に分からないと言う）。\n"
-        "- company_rule: このルールを社内レギュレーション（正本）にも登録してほしいという依頼"
-        "（『社内のレギュレーションも調整したい』『正本にも追加して』・レギュレーション_DBのURL付き等）。"
-        "company に登録内容を入れる: rule=ルール名（一言）・content=ルールの説明・"
-        "category=用字・表記|数字・英字|記号・約物|文末・語尾|表現・NG|体裁・構成 から選ぶ・wrong=誤例・right=正例。"
-        "reply には登録した旨（URLはシステムが付ける）。\n"
-        "reply の規約: です・ます調、感嘆符は全角！、太字や*は使わない、@メンションは書かない、絵文字なし、1〜5文で簡潔に。"
-        "「この提案は開いたままなので〜」のような案内の定型文は書かない。同じ文面を繰り返さない。"
-    )
-    llm.reset_used()
-    out = llm.gpt(prompt, max_tokens=800) or ""
-    mm = re.search(r"\{.*\}", out, re.S)
-    if not mm:
-        return None
-    try:
-        d = json.loads(mm.group(0))
-    except Exception:
+    xfacts = [f"再提示回数: {count}回目（4回を超えたら再提案せず、登録か見送りの判断を仰ぐ）"]
+    if bills and not filed:
+        xfacts.append("提示中の起票案: " + json.dumps(
+            [{k: p.get(k) for k in ("type", "issue_kind", "rule_kind", "要約", "詳細", "routine")}
+             for p in bills], ensure_ascii=False))
+    d = convo.decide(ch, root, m, mode="filed" if filed else "confirm", extra_facts=xfacts)
+    if not d:
         return None
     action = d.get("action")
-    reply = (d.get("reply") or "").strip()
-    if action not in ("file", "revise", "cancel", "edit_post", "answer_only", "company_rule") or not reply:
-        return None
+    if action == "answer":
+        action = "answer_only"
+    reply = d["reply"]
+    if action == "propose":  # filed の続きで出た新しい件 → 新ラウンドの確認へ
+        newb = _valid_agent_bills(d.get("proposals"))
+        if not newb:
+            return None
+        it["proposals"], it["status"] = newb, "awaiting_confirm"
+        it["propose_count"] = 1
+        _reply(ch, root, reply)
+        _log("propose", ch, root, m)
+        return 1
+    if action == "retract":
+        acted = _handle_retract(m, ch, root)
+        _log("retract", ch, root, m)
+        return acted or None
 
     if action == "company_rule":
         # 社内レギュレーション_DB（正本）への登録（2026-07-08 戸田「社内のレギュレーションも調整したい」。
@@ -825,15 +856,8 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
         _log("edit", ch, root, m, 結果=st)
         return 1
 
-    def _valid_bills(raw) -> list:
-        outp = []
-        for c in raw or []:
-            if isinstance(c, dict) and c.get("type") in ("issue", "rule") and (c.get("要約") or "").strip():
-                outp.append(_norm_item({**c, "確信度": c.get("確信度", 0.9)}))
-        return [c for c in outp if c.get("type") in ("issue", "rule")]
-
     if action == "revise":
-        newb = _valid_bills(d.get("proposals"))
+        newb = _valid_agent_bills(d.get("proposals"))
         if not newb or count >= _PROPOSE_CAP + 2:  # 案が壊れている/回りすぎ → 従来ロジックの安全弁へ
             return None
         it["proposals"] = newb
@@ -868,7 +892,7 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
         _log("filed", ch, root, m, urls=urls,
              routine=any(bool(p.get("routine")) for p, _ in ok),
              依頼元=(it.get("mention_text") or "")[:200])
-        follow = _valid_bills(d.get("proposals"))
+        follow = _valid_agent_bills(d.get("proposals"))
         if follow:  # 承認に同梱された新しい指摘＝次のラウンドへ（取りこぼさない）
             it["proposals"], it["status"] = follow, "awaiting_confirm"
             it["propose_count"] = 1
