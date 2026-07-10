@@ -666,6 +666,7 @@ def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
         return 0
     r = _propose_agent(m, ch, root, items)  # 会話コア（Phase A+B）が主経路
     if r is not None:
+        convo.commit()  # Phase C: 採用した判断だけ会話台帳へ（スレッド跨ぎの記憶）
         return r
     print("[intake] propose agent fallback -> legacy classify")
     cs = _classify_intake(m["text"], _thread_context(ch, root, m["ts"]))
@@ -915,6 +916,7 @@ def _confirm_inner(it: dict, m: dict, ch: str, root: str):
     （legacy の go は二重起票になるため通さない）。"""
     r = _confirm_agent(it, m, ch, root)
     if r is not None:
+        convo.commit()  # Phase C: 採用した判断だけ会話台帳へ
         return r
     if it.get("status") == "filed":
         print("[intake] filed follow-up: agent failed -> propose path")

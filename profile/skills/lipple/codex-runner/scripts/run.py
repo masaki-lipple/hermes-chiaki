@@ -189,6 +189,8 @@ def _process_threads() -> None:
             continue
         t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
         changed = True
+        if cd:
+            convo.commit()  # Phase C: 会話コアの判断を採用＝会話台帳へ
         action = act.get("action")
         reply = (act.get("reply") or "").strip()
         if action == "retract":
