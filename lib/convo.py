@@ -179,6 +179,21 @@ def thread_facts(ch: str, root: str) -> list[str]:
     except Exception:
         pass
     try:
+        # task-follow のリマインドA送信記録（キー=A:ch:root:report_ts）＝「これどういうロジックで
+        # リマインドした？」に事実で答えるため（2026-07-10 a040 スレッドの実質問）
+        for k, v in runtime.load_json("task_follow.json", {}).items():
+            parts = k.split(":")
+            if len(parts) == 4 and parts[0] == "A" and parts[1] == ch and parts[2] == root:
+                sent_ts = float(v.get("ts") if isinstance(v, dict) else v or 0)
+                when = dt.datetime.fromtimestamp(sent_ts, dt.timezone(dt.timedelta(hours=9))
+                                                 ).strftime("%m-%d %H:%M") if sent_ts else "?"
+                facts.append(f"このスレッドの「報告の確認をお願いします！」（{when}）はあなたが出したリマインドA"
+                             "（task-followスキル・平日8:50の定時実行）。ロジック=スレッド内の最新の完了報告で"
+                             "メンションされた責任者が、翌営業日になっても返信していない場合に確認を依頼"
+                             "（1つの報告につき1回だけ・kanryoスタンプ済みやスレッドURL付きの進捗共有は対象外）。")
+    except Exception:
+        pass
+    try:
         quota = runtime.load_json("codex_quota.json", {})
         if quota.get("blocked"):
             facts.append("システム状態: ChatGPTプランのCodex利用上限に到達中＝新規のCodex実装は当面不可"

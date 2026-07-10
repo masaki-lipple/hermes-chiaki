@@ -25,7 +25,21 @@ from lib import observe, runtime, source, notion, convo  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
 MENTION = f"<@{runtime.CHIAKI_SELF}>"
-WATCH_EXTRA = (runtime.CH_YU_PDCA, runtime.CH_NICHIJI)  # #5035/#a027（@メンションはどこでも受ける）
+WATCH_EXTRA = (runtime.CH_YU_PDCA, runtime.CH_NICHIJI)  # 動的取得が失敗した時のフォールバック
+_NEW_CH_BACKFILL_SEC = 6 * 3600  # 監視に入ったばかりのチャンネルは直近この分だけ遡って拾う
+
+
+def _watch_channels() -> list:
+    """@メンションを拾うチャンネル＝Botが参加している全チャンネル（#8902/#5902は専用走査のため除外）。
+    2026-07-10 戸田「なぜ無視される」＝a0xx系チャンネルへの招待後もここが固定4ch（#8902/#5902/#5035/#a027）
+    のままで、新チャンネルの@メンションをintakeが再発見できず黙殺していた（listenerは受信して即時起動して
+    いたが、intakeの走査範囲が狭く「nothing new」で終了）。typo-scan/9時報告と同じ動的方式に統一。"""
+    try:
+        chans = [c.get("id") for c in source.list_bot_channels()
+                 if c.get("id") and c.get("id") not in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)]
+        return chans or list(WATCH_EXTRA)
+    except Exception:
+        return list(WATCH_EXTRA)
 ISSUE_KINDS = {"バグ", "変更", "新機能", "その他"}
 RULE_KINDS = {"用語", "レギュレーション", "スタイル"}
 INTAKE_TIMEOUT_SEC = 7 * 24 * 3600  # 確認が来ない案は7日で失効（24hだと金曜起票→月曜返信が無音で死ぬ＝監査確定）
@@ -452,8 +466,10 @@ def _candidates(cur: dict, items: dict):
     # #5035/#a027：@メンション（どこでも）＋ 確認待ちスレッドの戸田返信（負荷を抑えて拾う）。
     # 新着返信のあるスレッド(thread_latest>since)も走査＝根が松永さん/botのスレッド内@メンションを
     # 黙殺しない（監査確定：「どこでも1窓口」の破れ）。拾う返信は従来どおり戸田さん＋MENTION限定。
-    for ch in WATCH_EXTRA:
+    for ch in _watch_channels():
         since = float(cur.get(ch, 0.0))
+        if not since:  # 初見チャンネル＝直近だけ遡る（大昔のメンションへ突然返信しない）
+            since = _now - _NEW_CH_BACKFILL_SEC
         for m in source.read_recent(ch, limit=50):
             if (m["user_id"] == runtime.TODA and m["ts_float"] > since and MENTION in (m.get("text") or "")):
                 cand.append((m, m["ts"], ch, ""))
