@@ -43,7 +43,23 @@ def _listener_alive() -> bool:
         return False
 
 
-def _log_missing(st: dict) -> list[str]:
+def _covers_full_workday(prev: float, now: float) -> bool:
+    """点検窓 [prev, now] が「営業日の9:00〜21:30」を丸ごと含むか。含まない窓（週末に基準を
+    作り直した直後など）では「全cronの痕跡があるはず」という期待自体が成り立たない＝誤警報になる。"""
+    d = dt.datetime.fromtimestamp(prev, JST).date()
+    end_d = dt.datetime.fromtimestamp(now, JST).date()
+    while d <= end_d:
+        noon = dt.datetime(d.year, d.month, d.day, 12, tzinfo=JST).timestamp()
+        if runtime.is_jp_workday(noon):
+            start = dt.datetime(d.year, d.month, d.day, 9, 0, tzinfo=JST).timestamp()
+            end = dt.datetime(d.year, d.month, d.day, 21, 30, tzinfo=JST).timestamp()
+            if prev <= start and end <= now:
+                return True
+        d += dt.timedelta(days=1)
+    return False
+
+
+def _log_missing(st: dict, now: float) -> list[str]:
     """前回点検以降のcron.log差分に、各スキルの痕跡があるか。初回は基準が無い＝オフセットだけ記録。"""
     p = Path(runtime.STATE_DIR) / "cron.log"
     if not p.exists():
@@ -53,9 +69,11 @@ def _log_missing(st: dict) -> list[str]:
     off = int(st.get("log_offset") or 0)
     if off > size:  # ログが縮んだ（ローテーション等）＝先頭から
         off = 0
+    prev = float(st.get("log_checked_ts") or 0)
     st["log_offset"] = size
-    if first:
-        return []
+    st["log_checked_ts"] = now
+    if first or not _covers_full_workday(prev, now):
+        return []  # 窓が営業日を丸ごと含まない＝期待が成り立たない（オフセットの前進のみ）
     with open(p, "rb") as f:
         f.seek(off)
         chunk = f.read().decode("utf-8", "replace")
@@ -119,7 +137,7 @@ def main() -> None:
     warns = []
     if not _listener_alive():
         warns.append("chiaki-listener.service が active でない（即時応答が全停止＝要再起動）")
-    warns += _log_missing(st)
+    warns += _log_missing(st, now)
     warns += _ledger_stale(now)
     warns += _swallowed(st, now)
     runtime.save_json(STATE, st)
