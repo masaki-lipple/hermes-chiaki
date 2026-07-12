@@ -16,7 +16,6 @@ from lib import runtime  # noqa: E402
 
 LOCK_PATH = "/tmp/chiaki_apply.lock"  # crontab の flock と共有
 WATCH_MGMT = runtime.CH_CHIAKI_MGMT            # 戸田さんの裁定（提案スレッド）
-WATCH_SRC = {runtime.CH_YU_PDCA, runtime.CH_NICHIJI}  # 対象者の完了報告（対象スレッド）
 
 # apply-ruling の main を読み込む（このプロセス内で実行。__main__ では起動しない）
 _AR = os.path.join(os.environ["HERMES_PROFILE_DIR"], "skills/lipple/apply-ruling/scripts/run.py")
@@ -62,9 +61,11 @@ def _is_relevant(ch: str, thread_ts: str) -> bool:
         return False
     if ch == WATCH_MGMT:
         return thread_ts in items                      # #8902 提案スレッド＝戸田さんの裁定
-    if ch in WATCH_SRC:
-        return any(it.get("source_ts") == thread_ts for it in items.values())  # 対象スレッド＝完了報告
-    return False
+    # 対象スレッド（完了報告）＝チャンネル決め打ちをやめ、裁定台帳の source_channel/source_ts と照合
+    # （2026-07-10 横断点検: 固定2ch(#5035/#a027)のままで、a0xx系スレッドへの修正依頼の完了報告が
+    # 夜間は翌朝のcronまで待たされていた＝intake窓口と同じ「固定リストの破れ」）
+    return any(it.get("source_ts") == thread_ts and it.get("source_channel") == ch
+               for it in items.values())
 
 
 def _is_intake_thread(ch: str, thread_ts: str) -> bool:
@@ -159,6 +160,13 @@ def main():
         # ch:ts で統一＝同一発話の message と app_mention は同一鍵で1回に畳む（event_id は両者で別＝素通りする）
         if _dup(f"{ch}:{ev.get('ts')}"):
             return
+        try:
+            # 受信・起動の事実を台帳に残す＝self-healthが毎朝「受けたのに処理痕跡が無い」黙殺を検知する
+            runtime.append_jsonl("listener_dispatch.jsonl",
+                                 {"at": runtime.now_ts(), "ch": ch, "ts": ev.get("ts"),
+                                  "thread": tts or "", "action": action})
+        except Exception:
+            pass
         try:
             if action == "apply":
                 print(f"[listener] ruling event ch={ch} thread={tts} -> apply-ruling", flush=True)
