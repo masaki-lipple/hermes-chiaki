@@ -72,7 +72,9 @@ def _log_missing(st: dict, now: float) -> list[str]:
     prev = float(st.get("log_checked_ts") or 0)
     st["log_offset"] = size
     st["log_checked_ts"] = now
-    if first or not _covers_full_workday(prev, now):
+    # prev=0（旧版の状態ファイル等で基準時刻が無い）も「窓が不明」＝スキップ。
+    # 2026-07-12 実発生: 旧版が作った基準に log_checked_ts が無く、ガードを素通りして誤警報11件を投稿した。
+    if first or not prev or not _covers_full_workday(prev, now):
         return []  # 窓が営業日を丸ごと含まない＝期待が成り立たない（オフセットの前進のみ）
     with open(p, "rb") as f:
         f.seek(off)
