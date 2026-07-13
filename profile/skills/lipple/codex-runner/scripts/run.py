@@ -104,8 +104,10 @@ def _post(text: str) -> str:
     return (r or {}).get("ts") or ""
 
 
-def _reply(thread_ts: str, body: str) -> None:
-    source.post_thread_reply(CH, thread_ts, _fmt(body))
+def _reply(thread_ts: str, body: str, ch: str = "") -> None:
+    """スレッド返信。ch未指定は#8902（2026-07-13 監査: #8902決め打ちだと#5902等の会話スレッド発の
+    依頼で、開始・完了報告が存在しないスレッドts宛てになりSlackが黙ってトップレベル化＝報告の迷子）。"""
+    source.post_thread_reply(ch or CH, thread_ts, _fmt(body))
 
 
 # ── 報告スレッドでの対話（段階1） ─────────────────────────
@@ -158,8 +160,9 @@ def _process_threads() -> None:
             t["status"] = "closed"
             changed = True
             continue
+        tch = t.get("channel") or CH  # スレッドの実チャンネル（#8902決め打ちにしない・2026-07-13）
         try:
-            replies = source.read_thread(CH, tts)
+            replies = source.read_thread(tch, tts)
         except Exception as e:
             print(f"[codex-runner] read_thread failed {tts}: {e}")
             continue
@@ -175,7 +178,7 @@ def _process_threads() -> None:
             pass
         # 判断は会話コア（Phase A+B＝統一文脈パッケージ）。不成立時は従来の分類へフォールバック
         act = None
-        cd = convo.decide(CH, tts, {"text": text}, mode="codex_thread")
+        cd = convo.decide(tch, tts, {"text": text}, mode="codex_thread")
         if cd:
             amap = {"codex_continue": "continue", "deploy_request": "deploy", "answer": "chat"}
             act = {"action": amap.get(cd["action"], cd["action"]),
@@ -194,7 +197,7 @@ def _process_threads() -> None:
         action = act.get("action")
         reply = (act.get("reply") or "").strip()
         if action == "retract":
-            _reply(tts, reply or "失礼しました！さきほどの投稿は誤りでした。")
+            _reply(tts, reply or "失礼しました！さきほどの投稿は誤りでした。", ch=tch)
             print(f"[codex-runner] thread {tts} -> retract")
             continue
         if action == "company_rule":
@@ -203,7 +206,8 @@ def _process_threads() -> None:
                 rule=c.get("rule") or "", content=c.get("content") or "",
                 category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "")
             _reply(tts, (reply + ("\n" + url if url else "")) if url else
-                   "社内レギュレーション_DBへの登録に失敗しました。共有・権限を確認してもらえますか？")
+                   "社内レギュレーション_DBへの登録に失敗しました。共有・権限を確認してもらえますか？",
+                   ch=tch)
             print(f"[codex-runner] thread {tts} -> company_rule")
             continue
         if action == "continue":
@@ -213,17 +217,17 @@ def _process_threads() -> None:
                 "summary": f"継続：{(act.get('instruction') or text)[:60]}",
                 "detail": act.get("instruction") or text,
                 "issue_url": t.get("issue_url") or "",
-                "continue_branch": t.get("branch") or "", "thread": tts})
-            _reply(tts, reply or "追加の指示を受け取りました！Codexに続きを任せます。")
+                "continue_branch": t.get("branch") or "", "thread": tts, "channel": tch})
+            _reply(tts, reply or "追加の指示を受け取りました！Codexに続きを任せます。", ch=tch)
             print(f"[codex-runner] thread {tts} -> continue queued")
         elif action == "deploy":
             t["deploy_requested"] = True
             _reply(tts, "本番への反映はClaude Codeのレビューを通してから行う約束にしています。"
-                        "レビュー依頼として記録したので、確認でき次第反映します！")
+                        "レビュー依頼として記録したので、確認でき次第反映します！", ch=tch)
             print(f"[codex-runner] thread {tts} -> deploy requested")
         else:  # question / chat
             if reply:
-                _reply(tts, reply)
+                _reply(tts, reply, ch=tch)
             print(f"[codex-runner] thread {tts} -> {action}")
     if changed:
         runtime.save_json("codex_threads.json", reg)
@@ -266,12 +270,14 @@ def _run_codex(item: dict, branch: str, prev_output: str = "") -> dict:
     return {"ok": ok, "output": out.strip(), "changed": changed, "diffstat": diffstat, "base": base}
 
 
-def _register_thread(reg_items: dict, tts: str, item: dict, branch: str, res: dict) -> None:
+def _register_thread(reg_items: dict, tts: str, item: dict, branch: str, res: dict,
+                     ch: str = "") -> None:
     if not tts:
         return
     reg_items[tts] = {
         "branch": branch, "summary": item.get("summary") or "",
         "issue_url": item.get("issue_url") or "",
+        "channel": ch or CH,  # 対話・報告の宛先チャンネル（#8902とは限らない）
         # 既読の起点は依頼時刻＝Codex実行中に届いた返信を取りこぼさない
         "status": "open", "last_seen_ts": float(item.get("ts") or runtime.now_ts()),
         "last_output": _tail(res.get("output") or "", 900)}
@@ -329,20 +335,23 @@ def main():
                 f"ChatGPTプランのCodex利用上限に到達中のため、実装はClaude Codeが引き受けます"
                 f"（Issueは残っています）。" + (f"\n{item['issue_url']}" if item.get("issue_url") else ""))
         if item.get("thread"):
-            source.post_thread_reply(CH, item["thread"], note)
+            source.post_thread_reply(item.get("channel") or CH, item["thread"], note)
         else:
             _post(note)
         print("[codex-runner] quota blocked -> skip run")
         return
-    # 会話スレッド発の依頼＝進捗も完了もそのスレッドへ（2026-07-03 戸田「進捗を同じスレッド内で報告させて」）
+    # 会話スレッド発の依頼＝進捗も完了もそのスレッドへ（2026-07-03 戸田「進捗を同じスレッド内で報告させて」）。
+    # 宛先はキュー項目のchannel（#5902や業務チャンネルの会話発もある＝#8902決め打ちにしない）
     origin_thread = "" if cont else (item.get("thread") or "")
+    origin_ch = item.get("channel") or CH
     if origin_thread:
         try:
             from lib import llm
             llm.reset_used()
         except Exception:
             pass
-        _reply(origin_thread, "Codexが作業を開始しました。終わったらこのスレッドに報告します。")
+        _reply(origin_thread, "Codexが作業を開始しました。終わったらこのスレッドに報告します。",
+               ch=origin_ch)
     print(f"[codex-runner] start {branch}: {summary[:60]}")
     try:
         res = _run_codex(item, branch, prev_output)
@@ -394,20 +403,21 @@ def main():
                     f"{_tail(res['output'])}{issue_line}")
 
     if cont and item.get("thread"):
-        source.post_thread_reply(CH, item["thread"], body)
         t = reg_items.get(item["thread"])
+        tch = item.get("channel") or (t or {}).get("channel") or CH
+        source.post_thread_reply(tch, item["thread"], body)
         if t is not None:
             t["last_output"] = _tail(res.get("output") or "", 900)
             # last_seen_ts はここで進めない＝Codex実行中に届いた戸田さんの返信を
             # 既読扱いで飲み込まない（2026-07-03「同じことは起きない？」が黙殺された実バグ）
     elif origin_thread:
-        source.post_thread_reply(CH, origin_thread, body)
-        _register_thread(reg_items, origin_thread, item, branch, res)
+        source.post_thread_reply(origin_ch, origin_thread, body)
+        _register_thread(reg_items, origin_thread, item, branch, res, ch=origin_ch)
         if res["ok"] and res["changed"]:
-            # 完了（レビュー待ち）はトップレベルにも一覧用で改めて報告（2026-07-03 戸田
+            # 完了（レビュー待ち）はトップレベル（#8902＝レビュー待ち一覧）にも改めて報告（2026-07-03 戸田
             # 「進捗はその会話の中で、完了はトップレベルに改めて報告しよう」）。
             # 対話は元スレッドで続けるため、この投稿は台帳に登録しない。
-            link = f"https://lipple.slack.com/archives/{CH}/p{origin_thread.replace('.', '')}"
+            link = f"https://lipple.slack.com/archives/{origin_ch}/p{origin_thread.replace('.', '')}"
             _post(f"<@{runtime.TODA}>\n報告：Codex実装（レビュー待ち）\n内容：{summary}\n\n"
                   f"会話スレッドで受けた依頼の実装が終わりました。ブランチは{branch}です。\n"
                   f"詳細とやりとりは以下のスレッドにあります。\n{link}")

@@ -32,6 +32,7 @@ def _run_apply():
             _apply_main()
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+            sys.stdout.flush()
 
 
 # chiaki-intake（@メンション/指摘＝issue/rule 振り分け・質問は回答）も即時起動
@@ -50,6 +51,7 @@ def _run_intake():
             _intake_main()
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+            sys.stdout.flush()  # journalの時刻を実行時刻に揃える（バッファ滞留で次イベント時に吐かれる）
 
 
 def _is_relevant(ch: str, thread_ts: str) -> bool:
@@ -78,11 +80,13 @@ def _is_intake_thread(ch: str, thread_ts: str) -> bool:
 
 
 def _is_codex_thread(ch: str, thread_ts: str) -> bool:
-    """その返信が codex-runner の報告スレッドか＝対話（継続実装/質問/反映依頼）を即時起動。"""
-    if not thread_ts or ch != WATCH_MGMT:
+    """その返信が codex-runner の報告スレッドか＝対話（継続実装/質問/反映依頼）を即時起動。
+    チャンネルは台帳に記録されたものと照合（2026-07-13 監査: #8902決め打ちだと#5902等の
+    会話スレッド発の依頼スレッドが対話として扱われない）。"""
+    if not thread_ts:
         return False
     t = runtime.load_json("codex_threads.json", {"items": {}}).get("items", {}).get(thread_ts)
-    return bool(t and t.get("status") != "closed")
+    return bool(t and t.get("status") != "closed" and (t.get("channel") or WATCH_MGMT) == ch)
 
 
 def _run_codex_runner():
