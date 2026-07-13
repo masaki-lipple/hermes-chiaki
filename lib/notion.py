@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+import urllib.error
 import urllib.request
 
 NOTION_VERSION = "2022-06-28"
@@ -30,22 +32,39 @@ COMPANY_REG_CATEGORIES = ("用字・表記", "数字・英字", "記号・約物
 COMPANY_REG_SCENES = ("社内コミュニケーション", "記事・コンテンツ")
 
 
+_RETRY_WAITS = (8, 20)  # 一時障害のリトライ間隔（DNS不通・タイムアウト・429・5xx。恒久エラー4xxは即諦める）
+
+
 def _api(method: str, path: str, body: dict | None = None):
-    """Notion API 呼び出し（GET/POST/PATCH）。トークン無・失敗時は None（握りつぶしてログ）。"""
+    """Notion API 呼び出し（GET/POST/PATCH）。トークン無・失敗時は None（握りつぶしてログ）。
+    一時障害はリトライ（2026-07-09 VPSのDNS一時エラーで夜間の適正工数反映が1晩スキップした実例。
+    起票・Issue更新・社内レギュ登録など全Notion経路の底上げ）。"""
     token = _token()
     if not token:
         return None
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(
-        f"https://api.notion.com/v1/{path}", data=data, method=method,
-        headers={"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION,
-                 "Content-Type": "application/json; charset=utf-8"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        print(f"[notion _api] {method} {path} failed: {e}")
-        return None
+    for attempt in range(len(_RETRY_WAITS) + 1):
+        req = urllib.request.Request(
+            f"https://api.notion.com/v1/{path}", data=data, method=method,
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION,
+                     "Content-Type": "application/json; charset=utf-8"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            transient = e.code in (429, 500, 502, 503, 504)
+            if not transient or attempt >= len(_RETRY_WAITS):
+                print(f"[notion _api] {method} {path} failed: {e}")
+                return None
+            print(f"[notion _api] {method} {path} {e.code} -> {_RETRY_WAITS[attempt]}s後に再試行")
+            time.sleep(_RETRY_WAITS[attempt])
+        except Exception as e:  # URLError(DNS)・タイムアウト等の一時障害
+            if attempt >= len(_RETRY_WAITS):
+                print(f"[notion _api] {method} {path} failed: {e}")
+                return None
+            print(f"[notion _api] {method} {path} {type(e).__name__} -> {_RETRY_WAITS[attempt]}s後に再試行")
+            time.sleep(_RETRY_WAITS[attempt])
+    return None
 
 
 def query_database_titles(db_id: str) -> dict:
