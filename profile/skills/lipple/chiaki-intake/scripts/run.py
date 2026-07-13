@@ -462,7 +462,9 @@ def _candidates(cur: dict, items: dict):
             cand.append((m, m["ts"], pdca, ""))
         elif m["ts_float"] > since_p and _esc_ok(m):
             cand.append((m, m["ts"], pdca, "escalate"))
-        if m.get("thread_replies"):
+        # Codex報告スレッドは#8902以外にも出来る（2026-07-13 報告先修正後）＝#5902でも除外しないと
+        # codex-runnerの対話と二重応答になる（同日16:48/16:50の同内容2連投の再発防止）
+        if m.get("thread_replies") and m["ts"] not in codex_threads:
             for r in source.read_thread(pdca, m["ts"]):
                 if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_p:
                     cand.append((r, m["ts"], pdca, ""))
@@ -479,7 +481,7 @@ def _candidates(cur: dict, items: dict):
             elif m["ts_float"] > since and _esc_ok(m):
                 # トップレベルの新規メンションのみ。スレッド返信（リマインドへの「OK」等）は対象外。
                 cand.append((m, m["ts"], ch, "escalate"))
-            scan = (m.get("thread_replies") and
+            scan = (m.get("thread_replies") and m["ts"] not in codex_threads and
                     (m.get("user_id") == runtime.CHIAKI_SELF or (ch, m["ts"]) in awaiting
                      or float(m.get("thread_latest") or 0) > since))
             if scan:
@@ -908,6 +910,9 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
         if force is None:
             force = any(p.get("type") == "issue" for p, _ in ok) or None
         codex_note = _maybe_enqueue_codex(it, m, ch, root, ok, force=force)
+        if codex_note and "codex" in reply.lower():
+            codex_note = ""  # 返事が既にCodex行きを伝えている＝定型の重ね掛けをしない（「Codexに回します。
+            # Codexに実装させます！」のような機械的な継ぎ足し文の解消・2026-07-13 戸田「意思疎通がうまくとれない」）
         _reply(ch, root, reply + extra + codex_note + "\n" + "\n".join(urls))
         _log("filed", ch, root, m, urls=urls,
              routine=any(bool(p.get("routine")) for p, _ in ok),
@@ -1130,6 +1135,11 @@ def main():
     # uniq は ts 昇順。失敗が出たチャンネルはそれ以降カーソルを進めない＝失敗メッセージを取りこぼさず次回再処理する。
     maxts, failed, acted = {}, set(), 0
     for m, root, ch, _hint in uniq:
+        if _hint != "escalate" and convo.already_replied(ch, m["ts"]):
+            # 既に別経路（codex-runnerの対話等）がこの発話に返答済み＝二重発話しない（最終ガード・2026-07-13）
+            if ch not in failed:
+                maxts[ch] = m["ts_float"]
+            continue
         try:  # モデル表記（GPT 5.4等）の取り違え防止＝メッセージごとに使用記録をリセット
             from lib import llm as _llm
             _llm.reset_used()

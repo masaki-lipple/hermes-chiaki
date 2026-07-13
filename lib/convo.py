@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import time
 
 from lib import runtime, source
 
@@ -33,7 +34,9 @@ ACTIONS = {
     "file": "提示済みの案の登録を承認された（OK/はい/Issueに追加で 等。他の話が同居していても承認が含まれていれば file）。"
             "reply には登録した旨＋同居していた話への応答（URLはシステムが付ける）。"
             'issueの場合 "codex": true/false＝コードの修正・変更・機能追加なら true（そのままCodexが実装・既定）、'
-            "起票だけの希望やコード外の作業は false。返信に新しい指摘が同居していれば proposals に次の案。",
+            "起票だけの希望やコード外の作業は false。codex=true のときは「Codexに回す・進捗はこのスレッドに報告する」"
+            "旨も reply の中で自然に伝える（システムは文を足さない＝あなたの一文で完結させる）。"
+            "返信に新しい指摘が同居していれば proposals に次の案。",
     "revise": "案の内容・振り分けの変更指示（「それRuleね」等）。proposals に修正版の全件。reply で新しい案を示して確認。",
     "cancel": "却下・見送り。",
     "edit_post": "特定の投稿そのものを直す依頼。instruction に直し方を具体的に。",
@@ -175,7 +178,7 @@ def thread_facts(ch: str, root: str) -> list[str]:
                          + ("・反映依頼を記録済み" if codex.get("deploy_requested") else "")
                          + "。本番反映はClaude Codeのレビュー後。")
             if codex.get("last_output"):
-                facts.append(f"Codexの直前の報告: {codex['last_output'][:200]}")
+                facts.append(f"Codexの直前の報告: {codex['last_output'][:600]}")
     except Exception:
         pass
     try:
@@ -235,7 +238,8 @@ def decide(ch: str, root: str, m: dict, mode: str, extra_facts: list[str] | None
     prompt = (
         "あなたは Chiaki AI（Lipple の業務観測AI）。Slackで戸田さんと自然に会話しながら業務を進めます。\n"
         "規約: です・ます調／感嘆符は全角！／太字や*は使わない／@メンションは書かない／絵文字なし／"
-        "1〜5文で簡潔に／定型の案内文・同じ言い回しを繰り返さない／知らないことは推測せず正直に言う。\n"
+        "1〜5文で簡潔に／定型の案内文・同じ言い回しを繰り返さない／知らないことは推測せず正直に言う／"
+        "内部の取得・表示の都合（文字数の切り詰め・ログの形式・状態ファイル名など）は発話に出さない。\n"
         "あなたが書き込めるNotion: Rule Registry（自分の言葉のルール）・Issue_DB（不具合バックログ）・"
         "社内レギュレーション_DB。それ以外のDB・ページは権限（共有）が無い＝頼まれたら共有してもらえれば"
         "対応できると正直に案内する。\n"
@@ -252,6 +256,22 @@ def decide(ch: str, root: str, m: dict, mode: str, extra_facts: list[str] | None
     )
     llm.reset_used()
     out = llm.gpt(prompt, max_tokens=900) or ""
+    # GPT不通（Haiku代替）の間は判断をさせない＝一時的なことが多いので本線の復帰を待って再試行
+    # （2026-07-13 9:48 不通の瞬間に旧定型文が出て「うまく汲み取れませんでした…」と突き放した実バグ。
+    # 30秒経過時は _progress_watch が「考え中」を出すので沈黙にはならない）
+    for _ in range(2):
+        if "代替" not in (llm.last_used() or ""):
+            break
+        time.sleep(20)
+        llm.reset_used()
+        out = llm.gpt(prompt, max_tokens=900) or ""
+    if "代替" in (llm.last_used() or ""):
+        if mode == "initial" and f"<@{runtime.CHIAKI_SELF}>" not in (m.get("text") or ""):
+            return None  # 呼びかけでない投稿は従来ロジックへ（不調の断り文で騒がない）
+        llm.reset_used()  # 固定文＝モデルタグを付けない
+        return {"action": "answer", "degraded": True,
+                "reply": "すみません、いま応答の本線（GPT）が不調で、正しく汲み取れない状態です。"
+                         "少し時間をおいて、もう一度お願いします！"}
     mm = re.search(r"\{.*\}", out, re.S)
     if not mm:
         return None
@@ -273,6 +293,18 @@ def decide(ch: str, root: str, m: dict, mode: str, extra_facts: list[str] | None
     elif action in ("edit_post", "codex_continue"):
         gist = (d.get("instruction") or "")[:120]
     _last = {"ts": runtime.now_ts(), "dt": jst.strftime("%m-%d %H:%M"), "ch": ch, "root": root,
-             "mode": mode, "said": (m.get("text") or "")[:160], "action": action,
-             "reply": d["reply"][:160], **({"gist": gist} if gist else {})}
+             "mode": mode, "m_ts": m.get("ts") or "", "said": (m.get("text") or "")[:160],
+             "action": action, "reply": d["reply"][:160], **({"gist": gist} if gist else {})}
     return d
+
+
+def already_replied(ch: str, m_ts: str) -> bool:
+    """この発話（ch, ts）に会話コア経由で返答済みか。intake と codex-runner など複数システムから
+    同じ発話が見える構造での二重発話を防ぐ最終ガード（2026-07-13 同内容2連投の再発防止）。"""
+    if not m_ts:
+        return False
+    try:
+        return any(e.get("ch") == ch and e.get("m_ts") == m_ts and e.get("action") != "silent"
+                   for e in memory().get("ledger") or [])
+    except Exception:
+        return False

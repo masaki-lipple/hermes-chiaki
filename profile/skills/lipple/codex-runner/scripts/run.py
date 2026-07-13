@@ -171,6 +171,12 @@ def _process_threads() -> None:
         if not new:
             continue
         text = "\n".join((m.get("text") or "") for m in new)
+        if convo.already_replied(tch, new[-1].get("ts") or ""):
+            # 既に別経路（intake等）がこの発話に返答済み＝二重発話しない（2026-07-13 16:48/16:50 二重の再発防止）
+            t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
+            changed = True
+            print(f"[codex-runner] thread {tts} -> already replied elsewhere")
+            continue
         try:
             from lib import llm
             llm.reset_used()
