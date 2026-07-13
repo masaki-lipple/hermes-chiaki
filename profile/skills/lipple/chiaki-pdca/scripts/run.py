@@ -82,7 +82,7 @@ def _observed_channels() -> list[str]:
     try:
         chs = [c["id"] for c in source.list_bot_channels()
                if c.get("id") and c["id"] not in _OBSERVE_EXCLUDE]
-        return chs or [runtime.CH_YU_PDCA]
+        return sorted(chs) or [runtime.CH_YU_PDCA]
     except Exception:
         return [runtime.CH_YU_PDCA]
 
