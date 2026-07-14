@@ -520,6 +520,51 @@ def _candidates(cur: dict, items: dict):
 
 
 _FILED_FOLLOWUP_SEC = 24 * 3600  # 起票完了後もこの間はスレッドの続きを会話エージェントで受ける
+_RECONCILE_SEC = 300  # フルスキャン（リコンサイル）の間隔＝listener停止・イベント欠落の補完（R2で降格）
+_LEDGER_WINDOW_SEC = 7 * 86400  # 台帳の古い未処理行はリコンサイルに任せて主経路では見ない
+
+
+def _ledger_candidates(items: dict):
+    """実行台帳の未処理行（owner=intake・status=received）から候補を作る（再設計R2＝主経路）。
+    listenerが受信時に登録した行が一次ソース。textは台帳のスナップショットではなく
+    Slackの現物を読み直す＝編集・削除に追随する（入力の権威はSlack・aikoの原則）。
+    従来のフルスキャン(_candidates)はリコンサイル（取りこぼし補完）に降格。"""
+    cand = []
+    now = runtime.now_ts()
+    pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
+    for eid, r in ledger.load().items():
+        if r.get("owner") != "intake" or (r.get("status") or "received") != "received":
+            continue
+        if not (now - _LEDGER_WINDOW_SEC < float(r.get("at") or 0)):
+            continue
+        ch, ts = r.get("ch") or "", r.get("ts") or ""
+        root = r.get("thread_root") or ts
+        if not ch or not ts:
+            continue
+        try:
+            msgs = source.read_thread(ch, root)
+        except Exception:
+            continue  # 一時障害＝次回再試行（statusはreceivedのまま）
+        m = next((x for x in msgs if x.get("ts") == ts), None)
+        if m is None:
+            ledger.record(eid, status="skipped", note="発話が削除済み")
+            continue
+        text = m.get("text") or ""
+        # 裁定スレッド内の防御（listener判定の二重ガード）: メンション無し・裸裁定語はapplyの領分
+        if root in pend and ch == runtime.CH_CHIAKI_MGMT and (
+                MENTION not in text or _is_bare_ruling(text)):
+            ledger.record(eid, status="skipped", note="apply領分")
+            continue
+        if m.get("user_id") != runtime.TODA:
+            # エスカレーション条件（トップレベル・1時間以内・メンション付き・人間）を満たさない行は終端
+            if not (root == ts and MENTION in text and m.get("ts_float", 0) > now - 3600
+                    and (m.get("user_id") or "").startswith("U")):
+                ledger.record(eid, status="skipped", note="escalate条件外")
+                continue
+            cand.append((m, root, ch, "escalate"))
+        else:
+            cand.append((m, root, ch, ""))
+    return cand
 
 
 _RULING_WORDS = _GO | {"go!", "却下", "やめ", "なしで", "見送り", "ボツ", "流して"}
@@ -1156,7 +1201,14 @@ def main():
     items = intake.setdefault("items", {})
     _expire_stale(items)
     runtime.save_json("chiaki_intake.json", intake)  # 失効を即保存＝直後の走査例外で失効通知が二重投稿されない
-    cand = _candidates(cur, items)
+    # R2: 主経路＝実行台帳（listenerが受信時に登録）。フルスキャンはリコンサイルに降格
+    # （listener停止・イベント欠落・台帳導入前の残りを5分毎に補完）。
+    cand = _ledger_candidates(items)
+    now0 = runtime.now_ts()
+    if now0 - float(cur.get("__scan__") or 0) > _RECONCILE_SEC:
+        cand += _candidates(cur, items)
+        cur["__scan__"] = now0
+        runtime.save_json("tuning_cursor.json", cur)
     if not cand:
         runtime.save_json("chiaki_intake.json", intake)  # 失効状態は保存
         print("[intake] nothing new")

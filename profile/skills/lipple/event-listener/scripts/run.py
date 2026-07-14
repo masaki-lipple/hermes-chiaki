@@ -71,12 +71,22 @@ def _is_relevant(ch: str, thread_ts: str) -> bool:
 
 
 def _is_intake_thread(ch: str, thread_ts: str) -> bool:
-    """その返信が chiaki-intake の確認待ち（awaiting_confirm）スレッドか＝確認ターンを即時起動。"""
+    """その返信が chiaki-intake の確認待ち（awaiting_confirm）または起票直後（filed・24h）の
+    スレッドか＝確認ターン/続き依頼を即時起動（R2: intakeの窓口条件と揃える）。"""
     if not thread_ts:
         return False
     items = runtime.load_json("chiaki_intake.json", {"items": {}}).get("items", {})
-    return any(it.get("status") == "awaiting_confirm" and it.get("channel") == ch
-               and it.get("thread_root") == thread_ts for it in items.values())
+    now = runtime.now_ts()
+    followup = _gi.get("_FILED_FOLLOWUP_SEC", 24 * 3600)
+    for it in items.values():
+        if it.get("channel") != ch or it.get("thread_root") != thread_ts:
+            continue
+        if it.get("status") == "awaiting_confirm":
+            return True
+        if (it.get("status") == "filed"
+                and now - float(it.get("proposed_at") or 0) < followup):
+            return True
+    return False
 
 
 def _is_codex_thread(ch: str, thread_ts: str) -> bool:
@@ -174,10 +184,12 @@ def main():
         # ch:ts で統一＝同一発話の message と app_mention は同一鍵で1回に畳む（event_id は両者で別＝素通りする）
         if _dup(f"{ch}:{ev.get('ts')}"):
             return
-        # 受信・起動の事実を実行台帳へ（再設計R1・旧listener_dispatch.jsonlの発展）。
-        # self-healthが毎朝「受けたのに処理痕跡が無い」黙殺を検知する突き合わせ元。
+        # 受信・起動の事実を実行台帳へ（再設計R1→R2ではこれが処理の一次ソース）。
+        # text も保存＝intake が台帳行から候補を作れる（処理時は Slack の現物を読み直す＝権威は Slack）。
+        # self-health が毎朝「受けたのに処理痕跡が無い」黙殺を検知する突き合わせ元でもある。
         ledger.record(ledger.event_id(ch, ev.get("ts") or ""), source="listener",
                       actor=user or "", ch=ch, thread_root=tts or "", ts=ev.get("ts") or "",
+                      text=(ev.get("text") or "")[:2000],
                       kind={"apply": "ruling", "codex": "codex"}.get(action, "intake"),
                       owner={"apply": "apply", "codex": "codex"}.get(action, "intake"),
                       status="received")
