@@ -1121,16 +1121,17 @@ def _handle_retract(m: dict, ch: str, root: str) -> int:
     if target:
         source.update_message(ch, target["ts"],
                               (target.get("text") or "") + "\n\n※この投稿は誤りでした。取り消します。")
-    pend = runtime.load_json("pending_approvals.json", {"items": {}})
     post_ts = {p.get("ts") for p in posts}
     closed = 0
-    for it in pend.get("items", {}).values():
-        if it.get("status") in ("pending", "awaiting_completion") and (
-                it.get("source_ts") == root or it.get("nudge_ts") in post_ts):
-            it["status"] = "retracted"
-            closed += 1
-    if closed:
-        runtime.save_json("pending_approvals.json", pend)
+    with runtime.approvals_lock():  # R3: 裁定台帳の書き込みは全系統でこのロック＝遷移の競合消去を根治
+        pend = runtime.load_json("pending_approvals.json", {"items": {}})
+        for it in pend.get("items", {}).values():
+            if it.get("status") in ("pending", "awaiting_completion") and (
+                    it.get("source_ts") == root or it.get("nudge_ts") in post_ts):
+                it["status"] = "retracted"
+                closed += 1
+        if closed:
+            runtime.save_json("pending_approvals.json", pend)
     ans = ""
     try:
         from lib import llm

@@ -75,6 +75,28 @@ def save_json(name: str, data) -> None:
     os.replace(tmp, p)
 
 
+APPROVALS_LOCK = "/tmp/chiaki_apply.lock"  # 裁定台帳の書き手全員が共有（apply-rulingのcron/listenerと同一）
+
+
+def approvals_lock():
+    """pending_approvals.json の読み書き排他（再設計R3）。書き手3系統（apply-ruling/intakeの
+    retract/propose-to-approval）が別ロックで load→modify→save し、状態遷移が競合で消え得た
+    （2026-07-14 レビュー確定バグ）。apply-ruling は cron の flock / listener の flock で
+    実行全体がこのロック下＝他の書き手が短くこれを取れば全書き込みが直列化される。"""
+    import fcntl
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _lock():
+        with open(APPROVALS_LOCK, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    return _lock()
+
+
 def append_jsonl(name: str, row: dict) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with open(_path(name), "a", encoding="utf-8") as f:

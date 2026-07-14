@@ -147,7 +147,7 @@ def main():
         print("[propose] no findings")
         return
     rules = _rules()
-    pending = runtime.load_json("pending_approvals.json", {"items": {}})
+    new_items = {}  # 裁定台帳への追加分（保存はロック下で読み直してマージ＝R3・競合消去の根治）
     posted = 0
     for f in findings:
         if f.get("status") != "new":
@@ -188,7 +188,7 @@ def main():
         res = source.post_message(runtime.CH_CHIAKI_MGMT, proposal)
         ts = res.get("ts") if isinstance(res, dict) else None
         if ts:
-            pending.setdefault("items", {})[ts] = {
+            new_items[ts] = {
                 "finding_kind": f["kind"], "source_channel": f.get("channel"),
                 "source_ts": f.get("msg_ts"), "draft": draft,
                 "target_user_id": tgt_id, "target_name": tgt_name,
@@ -200,7 +200,12 @@ def main():
             print(f"[propose] post failed, leave status=new: kind={f['kind']} ch={f.get('channel')}")
     changed = posted or any(f.get("status") in ("noted", "rejected_context") for f in findings)
     if posted:
-        runtime.save_json("pending_approvals.json", pending)  # pending を先に＝提案がGO不能になる黒穴を作らない
+        # pending を先に＝提案がGO不能になる黒穴を作らない。ロック下で読み直してマージ＝
+        # 実行中に apply-ruling / intake(retract) が変えた状態遷移を全書き戻しで消さない（R3）
+        with runtime.approvals_lock():
+            pending = runtime.load_json("pending_approvals.json", {"items": {}})
+            pending.setdefault("items", {}).update(new_items)
+            runtime.save_json("pending_approvals.json", pending)
     if changed:
         # 書き戻し直前に再読込し、実行中に他スキル(obs-batch/stall-scan)が追記した行を温存（監査確定バグ：
         # 同時刻cronのappendを全書き戻しで物理消去していた）。temp+replaceでアトミックに。
