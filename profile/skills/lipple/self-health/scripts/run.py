@@ -17,7 +17,6 @@ from lib import runtime, source  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
 STATE = "self_health.json"
-DISPATCH = "listener_dispatch.jsonl"
 GRACE_SEC = 600  # 直近10分のイベントは処理中の可能性＝次回の点検に回す
 LOG_EXPECT = {  # cron.logの実行痕跡（毎回必ず1行は出すスキルのみ。stall-scan/silenceは[SILENT]共用のため対象外）
     "chiaki-intake": "[intake]",
@@ -113,12 +112,14 @@ def _ledger_stale(now: float) -> list[str]:
 
 
 def _swallowed(st: dict, now: float) -> list[str]:
-    """listenerの受信・起動記録と処理痕跡の突き合わせ＝「受けたのに黙殺」の検知。
-    2026-07-10 a040バグはこの型（listenerは起動・intakeは走査範囲外でnothing new）だった。"""
+    """listenerの受信記録（実行台帳・再設計R1）と処理痕跡の突き合わせ＝「受けたのに黙殺」の検知。
+    2026-07-10 a040バグはこの型（listenerは起動・intakeは走査範囲外でnothing new）だった。
+    一次判定=台帳のstatusがreceivedから進んでいるか。二次判定=各系の既存状態（カーソル等）。"""
+    from lib import ledger
     last = float(st.get("dispatch_ts") or 0)
     horizon = now - GRACE_SEC
-    rows = [r for r in runtime.read_jsonl(DISPATCH)
-            if last < float(r.get("at") or 0) <= horizon]
+    rows = [(eid, r) for eid, r in ledger.load().items()
+            if r.get("source") == "listener" and last < float(r.get("at") or 0) <= horizon]
     st["dispatch_ts"] = horizon
     if not rows:
         return []
@@ -128,22 +129,24 @@ def _swallowed(st: dict, now: float) -> list[str]:
     pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
     ruling_roots = set(pend) | {v.get("source_ts") for v in pend.values()}
     warns = []
-    for r in rows:
-        ch, ts, action = r.get("ch") or "", r.get("ts") or "", r.get("action") or ""
-        thread = r.get("thread") or ""
+    for eid, r in rows:
+        ch, ts, owner = r.get("ch") or "", r.get("ts") or "", r.get("owner") or ""
+        thread = r.get("thread_root") or ""
+        if (r.get("status") or "received") != "received":
+            continue  # 台帳に処理記録あり＝OK
         ok = True
-        if action == "intake":
+        if owner == "intake":
             if thread in ruling_roots:  # 裁定スレッド内の発話（GO等）はapply-rulingの領分＝対象外
                 continue
             ok = ts in items or float(cur.get(ch, 0)) >= float(ts or 0)
-        elif action == "codex":
+        elif owner == "codex":
             t = codex.get(thread)
             ok = (not t) or float(t.get("last_seen_ts") or 0) >= float(ts or 0)
-        # action == "apply" は状態遷移が多岐＝ここでは監査しない
+        # owner == "apply" は裁定の状態遷移が多岐＝台帳status(ruled)以外はここでは監査しない
         if not ok:
             when = dt.datetime.fromtimestamp(float(r.get("at") or 0), JST).strftime("%m-%d %H:%M")
             warns.append(f"listenerが受信・起動したのに処理痕跡が無い: {when}のイベント"
-                         f"（{action}・ch={ch}・ts={ts}）")
+                         f"（{owner}・ch={ch}・ts={ts}）")
     return warns
 
 

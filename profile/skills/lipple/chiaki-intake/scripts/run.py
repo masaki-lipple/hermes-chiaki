@@ -21,7 +21,7 @@ import time
 from collections import Counter
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import observe, runtime, source, notion, convo  # noqa: E402
+from lib import observe, runtime, source, notion, convo, ledger  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
 MENTION = f"<@{runtime.CHIAKI_SELF}>"
@@ -1173,6 +1173,9 @@ def main():
     for m, root, ch, _hint in uniq:
         if _hint != "escalate" and convo.already_replied(ch, m["ts"]):
             # 既に別経路（codex-runnerの対話等）がこの発話に返答済み＝二重発話しない（最終ガード・2026-07-13）
+            ledger.record(ledger.event_id(ch, m["ts"]), actor=m.get("user_id") or "", ch=ch,
+                          thread_root=root, ts=m["ts"], kind="intake", owner="intake",
+                          status="skipped", note="already_replied")
             if ch not in failed:
                 maxts[ch] = m["ts_float"]
             continue
@@ -1201,9 +1204,16 @@ def main():
                     cancel()
             if ch not in failed:
                 maxts[ch] = m["ts_float"]  # 連続成功プレフィックスの高水位だけ前進
+            ledger.record(ledger.event_id(ch, m["ts"]), actor=m.get("user_id") or "", ch=ch,
+                          thread_root=root, ts=m["ts"],
+                          kind="escalate" if _hint == "escalate" else "intake",
+                          owner="intake", status="handled")
         except Exception as e:
             failed.add(ch)
             print(f"[intake] error ch={ch} ts={m['ts']}: {e}")
+            ledger.record(ledger.event_id(ch, m["ts"]), ch=ch, thread_root=root, ts=m["ts"],
+                          kind="intake", owner="intake", status="failed",
+                          note=f"{type(e).__name__}: {e}"[:120])
     runtime.save_json("chiaki_intake.json", intake)
     for ch, mx in maxts.items():
         cur[ch] = max(float(cur.get(ch, 0.0)), mx)

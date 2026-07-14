@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime, source, observe, notion, convo  # noqa: E402
+from lib import runtime, source, observe, notion, convo, ledger  # noqa: E402
 
 REPO = os.environ.get("HERMES_CODEX_REPO") or os.path.expanduser("~/src/hermes-chiaki")
 WORK = os.environ.get("HERMES_CODEX_WORK") or os.path.expanduser("~/src/hermes-chiaki-codex")
@@ -180,6 +180,9 @@ def _process_threads() -> None:
         if any(x.get("thread_root") == tts and x.get("status") == "awaiting_confirm"
                for x in _intake_items.values()):
             print(f"[codex-runner] thread {tts} -> intake確認ターン進行中=スキップ")
+            ledger.record(ledger.event_id(tch, new[-1].get("ts") or ""), ch=tch, thread_root=tts,
+                          ts=new[-1].get("ts") or "", kind="codex", owner="intake",
+                          status="deferred", note="intake確認ターン進行中")
             continue
         if convo.already_replied(tch, new[-1].get("ts") or ""):
             # 既に別経路（intake等）がこの発話に返答済み＝二重発話しない（2026-07-13 16:48/16:50 二重の再発防止）
@@ -215,6 +218,9 @@ def _process_threads() -> None:
         t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
         changed = True
         runtime.save_json("codex_threads.json", reg)  # 既読位置を即保存＝後続スレッドの例外で巻き戻さない
+        ledger.record(ledger.event_id(tch, new[-1].get("ts") or ""), actor=runtime.TODA, ch=tch,
+                      thread_root=tts, ts=new[-1].get("ts") or "", kind="codex", owner="codex",
+                      status="queued" if act.get("action") in ("continue",) else "replied")
         if cd:
             convo.commit()  # Phase C: 会話コアの判断を採用＝会話台帳へ
         action = act.get("action")
@@ -385,6 +391,10 @@ def main():
 
     st["done"][key] = {"status": "ok" if res["ok"] else "failed",
                        "branch": branch, "changed": res["changed"], "ts": runtime.now_ts()}
+    ledger.record(f"queue:{key}", kind="codex", owner="codex",
+                  status="ok" if res["ok"] else "failed",
+                  ch=item.get("channel") or "", thread_root=item.get("thread") or "",
+                  refs={"branch": branch, "changed": bool(res["changed"])})
     st["days"][today] = st["days"].get(today, 0) + 1
     st["days"] = {d: n for d, n in st["days"].items() if d >= today[:8] + "01"}  # 当月分だけ保持
     runtime.save_json("codex_runner.json", st)

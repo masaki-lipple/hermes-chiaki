@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import observe, runtime, source  # noqa: E402
+from lib import ledger, observe, runtime, source  # noqa: E402
 
 TEAM = "lipple"  # Slack ワークスペース subdomain（permalink 用）
 GO_EXACT = {"go", "ok", "おk", "おけ", "ｏｋ", "ゴー", "承認", "いいね", "了解", "りょうかい", "よし"}
@@ -203,6 +203,10 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
             report = "対象の投稿はすでに直っていたため、修正依頼は出しませんでした。この提案はクローズします。"
         if report:
             _save(pend)
+            ledger.record(ledger.event_id(runtime.CH_CHIAKI_MGMT, toda[-1].get("ts") or ""),
+                          actor=runtime.TODA, ch=runtime.CH_CHIAKI_MGMT, thread_root=tts,
+                          ts=toda[-1].get("ts") or "", kind="ruling", owner="apply",
+                          status="ruled", refs={"item_status": it.get("status")})
             runtime.append_jsonl("rulings.jsonl", {
                 "ts": runtime.now_ts(), "thread_ts": tts, "verdict": it["status"],
                 "kind": it.get("finding_kind", ""), "original": draft,
@@ -239,6 +243,10 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
         it["final_text"] = final
         it["nudge_ts"], it["ruling_text"] = nudge_ts, ruling_text
     _save(pend)  # 投稿直後に永続化＝この後の例外でも再投稿しない
+    ledger.record(ledger.event_id(runtime.CH_CHIAKI_MGMT, toda[-1].get("ts") or ""),
+                  actor=runtime.TODA, ch=runtime.CH_CHIAKI_MGMT, thread_root=tts,
+                  ts=toda[-1].get("ts") or "", kind="ruling", owner="apply", status="ruled",
+                  refs={"verdict": verdict, "item_status": it.get("status")})
     runtime.append_jsonl("rulings.jsonl", {
         "ts": runtime.now_ts(), "thread_ts": tts, "verdict": verdict,
         "kind": it.get("finding_kind", ""), "original": draft,

@@ -12,7 +12,7 @@ import sys
 import threading
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import runtime  # noqa: E402
+from lib import ledger, runtime  # noqa: E402
 
 LOCK_PATH = "/tmp/chiaki_apply.lock"  # crontab の flock と共有
 WATCH_MGMT = runtime.CH_CHIAKI_MGMT            # 戸田さんの裁定（提案スレッド）
@@ -174,13 +174,13 @@ def main():
         # ch:ts で統一＝同一発話の message と app_mention は同一鍵で1回に畳む（event_id は両者で別＝素通りする）
         if _dup(f"{ch}:{ev.get('ts')}"):
             return
-        try:
-            # 受信・起動の事実を台帳に残す＝self-healthが毎朝「受けたのに処理痕跡が無い」黙殺を検知する
-            runtime.append_jsonl("listener_dispatch.jsonl",
-                                 {"at": runtime.now_ts(), "ch": ch, "ts": ev.get("ts"),
-                                  "thread": tts or "", "action": action})
-        except Exception:
-            pass
+        # 受信・起動の事実を実行台帳へ（再設計R1・旧listener_dispatch.jsonlの発展）。
+        # self-healthが毎朝「受けたのに処理痕跡が無い」黙殺を検知する突き合わせ元。
+        ledger.record(ledger.event_id(ch, ev.get("ts") or ""), source="listener",
+                      actor=user or "", ch=ch, thread_root=tts or "", ts=ev.get("ts") or "",
+                      kind={"apply": "ruling", "codex": "codex"}.get(action, "intake"),
+                      owner={"apply": "apply", "codex": "codex"}.get(action, "intake"),
+                      status="received")
         try:
             if action == "apply":
                 print(f"[listener] ruling event ch={ch} thread={tts} -> apply-ruling", flush=True)
