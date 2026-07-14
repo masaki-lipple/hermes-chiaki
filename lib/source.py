@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -43,19 +44,49 @@ def _norm_api(m: dict) -> dict:
     }
 
 
+_SLACK_RETRY_WAITS = (5, 15)  # 一時障害（DNS不通・タイムアウト・429・5xx）のリトライ間隔
+
+
+def _urlopen_json(req, tag: str) -> dict:
+    """Slack API 実行の共通処理（2026-07-14 レビュー: 一時障害が即例外＝走査全体が死ぬ／
+    ok:false が無音成功扱い、の2点の底上げ）。429 は Retry-After を尊重。"""
+    for attempt in range(len(_SLACK_RETRY_WAITS) + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                res = json.loads(r.read().decode())
+            if isinstance(res, dict) and res.get("ok") is False:
+                print(f"[slack {tag}] ok:false error={res.get('error')}")
+            return res
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504) or attempt >= len(_SLACK_RETRY_WAITS):
+                raise
+            wait = _SLACK_RETRY_WAITS[attempt]
+            if e.code == 429:
+                try:
+                    wait = min(int(e.headers.get("Retry-After") or wait), 60)
+                except Exception:
+                    pass
+            print(f"[slack {tag}] {e.code} -> {wait}s後に再試行")
+            time.sleep(wait)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt >= len(_SLACK_RETRY_WAITS):
+                raise
+            print(f"[slack {tag}] 接続失敗 -> {_SLACK_RETRY_WAITS[attempt]}s後に再試行")
+            time.sleep(_SLACK_RETRY_WAITS[attempt])
+    return {}
+
+
 def _api_get(method: str, params: dict) -> dict:
     url = _API + method + "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {_TOKEN}"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode())
+    return _urlopen_json(req, method)
 
 
 def _api_post(method: str, payload: dict) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(_API + method, data=data, headers={
         "Authorization": f"Bearer {_TOKEN}", "Content-Type": "application/json; charset=utf-8"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode())
+    return _urlopen_json(req, method)
 
 
 # ※旧 _rich_blocks（箇条書きを rich_text_list ブロックへ変換）は 2026-07-03 に廃止。
@@ -141,11 +172,21 @@ def user_display_name(user_id: str) -> str:
 
 
 def read_thread(channel_id: str, thread_ts: str) -> list[dict]:
-    """スレッド返信（根を含む）。stall の human_replies 算出に使う。"""
+    """スレッド返信（根を含む・ページング対応）。conversations.replies は古い順に返すため、
+    ページングしないと200件超のスレッドで最新の返信が永久に見えない（2026-07-14 レビュー確定バグ）。"""
     if FIXTURES:
         return []  # fixture にスレッド本文は無い（root の thread_replies で代用）
-    res = _api_get("conversations.replies", {"channel": channel_id, "ts": thread_ts, "limit": 200})
-    return [_norm_api(m) for m in res.get("messages", [])]
+    out, cursor = [], None
+    while True:
+        params = {"channel": channel_id, "ts": thread_ts, "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        res = _api_get("conversations.replies", params)
+        out += [_norm_api(m) for m in res.get("messages", [])]
+        cursor = (res.get("response_metadata") or {}).get("next_cursor")
+        if not cursor or len(out) >= 1000:
+            break
+    return out
 
 
 def human_replies(channel_id: str, root: dict, bot_user_ids: set[str]) -> int | None:

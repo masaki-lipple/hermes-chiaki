@@ -85,7 +85,15 @@ def read_jsonl(name: str) -> list[dict]:
     p = _path(name)
     if not p.exists():
         return []
-    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    out = []
+    for ln in p.read_text(encoding="utf-8").splitlines():
+        if not ln.strip():
+            continue
+        try:
+            out.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue  # 部分書込みの破損1行でキュー全体を殺さない（load_jsonと同じ寛容方針）
+    return out
 
 
 def load_policy() -> dict:

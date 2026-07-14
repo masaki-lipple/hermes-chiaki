@@ -107,6 +107,8 @@ def _post(text: str) -> str:
 def _reply(thread_ts: str, body: str, ch: str = "") -> None:
     """スレッド返信。ch未指定は#8902（2026-07-13 監査: #8902決め打ちだと#5902等の会話スレッド発の
     依頼で、開始・完了報告が存在しないスレッドts宛てになりSlackが黙ってトップレベル化＝報告の迷子）。"""
+    # GPT反射の生メンション漏れを中和（第三者ping・架空宛名の防止。宛名は_fmtが付ける）
+    body = re.sub(r"<@U[A-Z0-9]+>", "", body or "")
     source.post_thread_reply(ch or CH, thread_ts, _fmt(body))
 
 
@@ -171,6 +173,14 @@ def _process_threads() -> None:
         if not new:
             continue
         text = "\n".join((m.get("text") or "") for m in new)
+        # intakeの確認ターンが進行中のスレッドは触らない＝承認（「それもOK」）の宙吊り防止
+        # （2026-07-14 レビュー確定バグ）。last_seenは進めない＝intakeが応答した後、
+        # already_replied で次回こちらが黙って既読化する。
+        _intake_items = runtime.load_json("chiaki_intake.json", {"items": {}}).get("items", {})
+        if any(x.get("thread_root") == tts and x.get("status") == "awaiting_confirm"
+               for x in _intake_items.values()):
+            print(f"[codex-runner] thread {tts} -> intake確認ターン進行中=スキップ")
+            continue
         if convo.already_replied(tch, new[-1].get("ts") or ""):
             # 既に別経路（intake等）がこの発話に返答済み＝二重発話しない（2026-07-13 16:48/16:50 二重の再発防止）
             t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
@@ -184,7 +194,9 @@ def _process_threads() -> None:
             pass
         # 判断は会話コア（Phase A+B＝統一文脈パッケージ）。不成立時は従来の分類へフォールバック
         act = None
-        cd = convo.decide(tch, tts, {"text": text}, mode="codex_thread")
+        # tsを渡す＝会話台帳のm_tsに記録され、already_repliedの二重発話ガードが双方向に効く
+        # （2026-07-14 レビュー確定バグ: ts無しだとm_tsが常に空でintake側から検知できない）
+        cd = convo.decide(tch, tts, {"text": text, "ts": new[-1].get("ts") or ""}, mode="codex_thread")
         if cd:
             amap = {"codex_continue": "continue", "deploy_request": "deploy", "answer": "chat"}
             act = {"action": amap.get(cd["action"], cd["action"]),
@@ -196,8 +208,13 @@ def _process_threads() -> None:
             # 分類不能（LLM全滅など）は last_seen を進めず次回リトライ＝黙殺しない
             print(f"[codex-runner] classify failed {tts}")
             continue
+        if act.get("action") in ("question", "chat") and not (act.get("reply") or "").strip():
+            # 返事の無い応答で既読化しない＝質問の無音黙殺防止（次回リトライ）
+            print(f"[codex-runner] empty reply {tts} -> retry next run")
+            continue
         t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
         changed = True
+        runtime.save_json("codex_threads.json", reg)  # 既読位置を即保存＝後続スレッドの例外で巻き戻さない
         if cd:
             convo.commit()  # Phase C: 会話コアの判断を採用＝会話台帳へ
         action = act.get("action")
@@ -212,7 +229,8 @@ def _process_threads() -> None:
                 rule=c.get("rule") or "", content=c.get("content") or "",
                 category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "")
             _reply(tts, (reply + ("\n" + url if url else "")) if url else
-                   "社内レギュレーション_DBへの登録に失敗しました。共有・権限を確認してもらえますか？",
+                   (reply + "（ローカル確認のため実際の保存はしていません）" if not notion._token() else
+                    "社内レギュレーション_DBへの登録に失敗しました。共有・権限を確認してもらえますか？"),
                    ch=tch)
             print(f"[codex-runner] thread {tts} -> company_rule")
             continue
@@ -373,13 +391,17 @@ def main():
     if res["ok"] and runtime.load_json("codex_quota.json", {}).get("blocked"):
         runtime.save_json("codex_quota.json", {})  # 実行が通った＝上限解除
 
+    issue_note = ""
     if res["ok"] and res["changed"] and item.get("issue_url"):
         # 履歴管理の正本＝Issue_DB（2026-07-08 戸田）: 実装完了で「レビュー待ち」+ブランチを記録。
-        # Claude Code のレビューで 採用→完了／不採用→未対応に戻す。失敗しても報告は止めない。
+        # Claude Code のレビューで 採用→完了／不採用→未対応に戻す。失敗しても報告は止めない
+        # （ただし失敗は黙らず報告に添える＝2026-07-14 レビュー: 失敗無視で「レビュー待ち」と宣言していた）。
         try:
-            notion.update_issue(item["issue_url"], status="レビュー待ち", branch=branch)
+            if not notion.update_issue(item["issue_url"], status="レビュー待ち", branch=branch):
+                issue_note = "\nIssueのステータス自動更新には失敗しました（お手数ですが手動で「レビュー待ち」にしてください）。"
         except Exception as e:
             print(f"[codex-runner] issue status update failed: {e}")
+            issue_note = "\nIssueのステータス自動更新には失敗しました（お手数ですが手動で「レビュー待ち」にしてください）。"
 
     issue_line = f"\n{item['issue_url']}" if item.get("issue_url") else ""
     if res["ok"] and res["changed"]:
@@ -388,7 +410,7 @@ def main():
                 f"Codexが実装を終えました。VPSのブランチ{branch}（ベース{res['base']}・"
                 f"変更{n_files}ファイル）に変更があります。\n\n"
                 f"Codexの報告：\n{_tail(res['output'])}\n\n"
-                f"続きの指示・質問はこのスレッドでどうぞ。本番反映はClaude Codeのレビュー後です。{issue_line}")
+                f"続きの指示・質問はこのスレッドでどうぞ。本番反映はClaude Codeのレビュー後です。{issue_note}{issue_line}")
     elif res["ok"]:
         body = (f"<@{runtime.TODA}>\n報告：Codex実装（変更なし）\n内容：{summary}\n\n"
                 f"Codexは修正不要（または対応不可）と判断し、コードは変更されていません。\n\n"

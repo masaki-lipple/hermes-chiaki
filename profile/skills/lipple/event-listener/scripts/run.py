@@ -147,10 +147,20 @@ def main():
         # 戸田さんの明示的な @メンションは intake 最優先（監査確定：促しスレッド内の @メンションが
         # _is_relevant で apply-ruling に回り黙殺されていた）。メンション無しの裁定返信は従来どおり apply。
         action = None
-        if user == runtime.TODA and _is_codex_thread(ch, tts):
+        if user == runtime.TODA and _is_intake_thread(ch, tts):
+            # 確認ターン進行中のスレッドは窓口が最優先＝同じスレッドがCodex報告台帳に登録されても
+            # 承認（「それもOK」）を宙吊りにしない（2026-07-14 レビュー確定バグ）
+            action = "intake"
+        elif user == runtime.TODA and _is_codex_thread(ch, tts):
             action = "codex"   # Codex 報告スレッド内は @メンション有無に関わらず対話として扱う
         elif user == runtime.TODA and etype == "app_mention":
-            action = "intake"
+            # メンション付きでも裸の裁定語（GO/OK/却下等）は apply-ruling の領分。intake側は
+            # _is_bare_ruling でスキップするため、ここで intake へ回すとイベント到着順次第で
+            # 裁定が翌営業朝の cron まで黙殺される（2026-07-14 レビュー確定バグ＝非決定の握りつぶし）
+            if _is_relevant(ch, tts) and _gi.get("_is_bare_ruling", lambda t: False)(ev.get("text") or ""):
+                action = "apply"
+            else:
+                action = "intake"
         elif _is_relevant(ch, tts):
             action = "apply"
         elif user == runtime.TODA and (ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)

@@ -44,6 +44,14 @@ def _push_to_notion(bl: dict) -> None:
     rows = _query_rows_with_retry(notion.KOUSU_DB)
     if not rows:
         print("[compute-baselines] DB query empty -> skip (再試行後も空。共有/権限またはNotion障害を確認)")
+        try:  # 無音スキップにしない（2026-07-14 レビュー: 全停止してもSlackに何も出ず気づけなかった）
+            from lib import source
+            source.post_message(runtime.CH_CHIAKI_MGMT,
+                                f"<@{runtime.CHIAKI_SELF}>\n報告：適正工数_DBの自動反映スキップ\n\n"
+                                "今晩のNotion照会が再試行後も失敗したため、実測の反映を1晩スキップしました。"
+                                "明晩の実行で追いつきます。連日続く場合はDBの共有・権限かNotion側の障害の確認が必要です。")
+        except Exception:
+            pass
         return
     today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y-%m-%d")
     by_kind = bl.get("by_kind", {})

@@ -125,7 +125,9 @@ def fix_reports(n: int = 6) -> str:
     """#8902 の直近の修正報告＝自分がどう直されてきたかの知識源。"""
     try:
         out = []
-        for m in source.read_recent(runtime.CH_CHIAKI_MGMT, limit=40):
+        # read_recent は古い順＝逆順に走査しないと「最新の修正報告」でなく窓内の最古6件を拾う
+        # （2026-07-14 レビュー確定バグ: 直近の修正が知識から欠落し「なぜ？」に古い答えを返す）
+        for m in reversed(source.read_recent(runtime.CH_CHIAKI_MGMT, limit=40)):
             t = m.get("text") or ""
             if m.get("user_id") == runtime.CHIAKI_SELF and "報告：" in t[:40]:
                 out.append(f"[{(m.get('datetime') or '')[:16]}] {t[:400]}")

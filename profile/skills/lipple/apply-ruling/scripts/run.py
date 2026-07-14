@@ -163,7 +163,15 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
     if not toda:
         return 0
     ruling_text = toda[-1].get("text", "")
-    verdict, payload = _classify(ruling_text)
+    core_text = ruling_text
+    if f"<@{runtime.CHIAKI_SELF}>" in ruling_text:
+        # @メンション付きの返信は原則 intake（会話コア）の領分＝二重処理しない（2026-07-14 レビュー確定バグ:
+        # 「@Chiaki AI この文面短くして」に intake の会話と apply の interpret 実行が別々に反応していた）。
+        # 例外＝メンションを除いた本文が裸の裁定語（GO/却下/質問等）の場合だけ従来どおりここで扱う。
+        core_text = re.sub(r"<@U[A-Z0-9]+>", "", ruling_text)
+        if _classify(core_text)[0] == "interpret":
+            return 0
+    verdict, payload = _classify(core_text)
     if verdict == "skip":
         return 0
 

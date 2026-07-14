@@ -67,15 +67,19 @@ def _api(method: str, path: str, body: dict | None = None):
     return None
 
 
-def query_database_titles(db_id: str) -> dict:
+def query_database_titles(db_id: str):
     """DB の全ページを {title文字列: {"id":..., "props":生プロパティ}} で返す（ページング対応）。
-    title プロパティ名は問わず type=='title' の列を採用。失敗/未共有時は {}。"""
+    title プロパティ名は問わず type=='title' の列を採用。**API失敗時は None**（部分結果を
+    正常値と偽らない＝2026-07-14 レビュー: ページング途中の失敗が「データ終端」扱いだった）。
+    空DB・未共有は {}。"""
     out, cursor = {}, None
     while True:
         body = {"page_size": 100}
         if cursor:
             body["start_cursor"] = cursor
         res = _api("POST", f"databases/{db_id}/query", body)
+        if res is None:
+            return None
         if not res:
             break
         for pg in res.get("results", []):
@@ -122,7 +126,11 @@ ISSUE_STATUSES = ("未対応", "対応中", "レビュー待ち", "完了")
 
 
 def _page_id_from_url(url: str) -> str:
-    m = re.search(r"([0-9a-f]{32})", (url or "").replace("-", ""))
+    """Notion URL 末尾のページID。ハイフン除去後の「左端一致」だとスラッグ末尾が16進の場合に
+    タイトルを巻き込んだ誤IDになる（例:『…-Claude-Code-<id>』→404）＝末尾32桁に固定
+    （2026-07-14 レビュー確定バグ）。"""
+    seg = (url or "").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].replace("-", "")
+    m = re.search(r"([0-9a-f]{32})$", seg)
     return m.group(1) if m else ""
 
 

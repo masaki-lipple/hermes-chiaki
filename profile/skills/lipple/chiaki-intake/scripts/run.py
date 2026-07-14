@@ -269,7 +269,9 @@ def _fix_reports(n: int = 6) -> str:
     「なぜこうなる？」に「こういうバグでした」と答えるための情報源（2026-07-03 戸田指摘）。"""
     try:
         out = []
-        for m in source.read_recent(runtime.CH_CHIAKI_MGMT, limit=40):
+        # read_recent は古い順＝逆順に走査しないと「最新の修正報告」でなく窓内の最古6件を拾う
+        # （2026-07-14 レビュー確定バグ: 直近の修正が知識から欠落し「なぜ？」に古い答えを返す）
+        for m in reversed(source.read_recent(runtime.CH_CHIAKI_MGMT, limit=40)):
             t = m.get("text") or ""
             if m.get("user_id") == runtime.CHIAKI_SELF and "報告：" in t[:40]:
                 out.append(f"[{(m.get('datetime') or '')[:16]}] {t[:400]}")
@@ -421,10 +423,17 @@ def _candidates(cur: dict, items: dict):
     # 進行中だけ除外すると、完了した瞬間にスレッド内の過去の「OK」（裁定として処理済み）を
     # intake が新規発話として拾い直し、後追いの雑談返信を投げる（2026-07-03 実バグ＝二重処理）。
     ruling_threads = set(pend)
-    # Codex 報告スレッドの返信は codex-runner の対話（継続実装/質問/反映依頼）が引き受ける＝intake は触らない
-    codex_threads = set(runtime.load_json("codex_threads.json", {"items": {}}).get("items", {}))
+    # Codex 報告スレッドの返信は codex-runner の対話（継続実装/質問/反映依頼）が引き受ける＝intake は触らない。
+    # closed（7日無活動）は除外しない＝closedスレッドへの久しぶりの返信はcodex-runnerも読まないため、
+    # 台帳全キーで除外すると全経路黙殺になる（2026-07-14 レビュー確定バグ）
+    codex_threads = {k for k, v in runtime.load_json("codex_threads.json", {"items": {}})
+                     .get("items", {}).items() if v.get("status") != "closed"}
+    _now0 = runtime.now_ts()
+    # 確認待ちに加え、起票直後（filed・24h）も窓口が受ける＝業務chでもメンション無しの続き依頼を黙殺しない
     awaiting = {(it.get("channel"), it.get("thread_root")) for it in items.values()
-                if it.get("status") == "awaiting_confirm"}
+                if it.get("status") == "awaiting_confirm"
+                or (it.get("status") == "filed"
+                    and _now0 - float(it.get("proposed_at") or 0) < _FILED_FOLLOWUP_SEC)}
     # 戸田さん以外からの @Chiaki AI ＝エスカレーション対象（権限は戸田さんのみ・2026-07-02）。
     # ①トップレベルのみ＝スレッド内の返信（chiaki のリマインドへの「OK」等）は依頼でなく応答なので対象外
     # ②直近1時間の新規のみ＝カーソル未設定/リセット時に過去分へ一括送信しない
@@ -432,7 +441,9 @@ def _candidates(cur: dict, items: dict):
     _now = runtime.now_ts()
 
     def _other(uid):
-        return uid and uid not in (runtime.TODA, runtime.CHIAKI_SELF, runtime.GCP_TASK_BOT)
+        # bot投稿は user_id にフォールバックの bot_id(B…) が入る＝壊れた <@B…> でエスカレーションしない
+        return (uid and uid.startswith("U")
+                and uid not in (runtime.TODA, runtime.CHIAKI_SELF, runtime.GCP_TASK_BOT))
 
     def _esc_ok(m):
         return (_other(m.get("user_id")) and MENTION in (m.get("text") or "")
@@ -445,7 +456,8 @@ def _candidates(cur: dict, items: dict):
             cand.append((m, m["ts"], mgmt, ""))
         elif m["ts_float"] > since_m and _esc_ok(m):
             cand.append((m, m["ts"], mgmt, "escalate"))
-        if m.get("thread_replies") and m["ts"] not in codex_threads:
+        if (m.get("thread_replies") and m["ts"] not in codex_threads
+                and (m.get("thread_latest") is None or float(m.get("thread_latest") or 0) > since_m)):
             need_mention = m["ts"] in ruling_threads  # 裁定スレッド内は @メンション明示のみ
             for r in source.read_thread(mgmt, m["ts"]):
                 if (r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_m
@@ -464,7 +476,8 @@ def _candidates(cur: dict, items: dict):
             cand.append((m, m["ts"], pdca, "escalate"))
         # Codex報告スレッドは#8902以外にも出来る（2026-07-13 報告先修正後）＝#5902でも除外しないと
         # codex-runnerの対話と二重応答になる（同日16:48/16:50の同内容2連投の再発防止）
-        if m.get("thread_replies") and m["ts"] not in codex_threads:
+        if (m.get("thread_replies") and m["ts"] not in codex_threads
+                and (m.get("thread_latest") is None or float(m.get("thread_latest") or 0) > since_p)):
             for r in source.read_thread(pdca, m["ts"]):
                 if r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since_p:
                     cand.append((r, m["ts"], pdca, ""))
@@ -489,6 +502,20 @@ def _candidates(cur: dict, items: dict):
                     if (r["ts"] != m["ts"] and r["user_id"] == runtime.TODA and r["ts_float"] > since
                             and (MENTION in (r.get("text") or "") or (ch, m["ts"]) in awaiting)):
                         cand.append((r, m["ts"], ch, ""))
+    # 確認待ち/起票直後のスレッドは台帳から直接読む＝根が read_recent の50件窓から押し出されても
+    # 戸田さんの「OK」を黙殺しない・勝手に失効させない（2026-07-14 レビュー確定バグ）。
+    # 既存経路との重複は main の seen で畳まれる。
+    for it in items.values():
+        ich, iroot = it.get("channel"), it.get("thread_root")
+        if not ich or not iroot or (ich, iroot) not in awaiting or iroot in codex_threads:
+            continue
+        last = float(it.get("last_seen_ts") or 0)
+        try:
+            for r in source.read_thread(ich, iroot):
+                if r["ts"] != iroot and r["user_id"] == runtime.TODA and r["ts_float"] > last:
+                    cand.append((r, iroot, ich, ""))
+        except Exception:
+            pass
     return cand
 
 
@@ -665,6 +692,8 @@ def _propose_agent(m: dict, ch: str, root: str, items: dict):
         if url:
             _reply(ch, root, reply, url)
             _log("company_rule", ch, root, m, url=url)
+        elif not notion._token():  # ローカル確認(DRY)と実API失敗を区別＝誤って権限確認を求めない
+            _reply(ch, root, reply + "（ローカル確認のため実際の保存はしていません）")
         else:
             _reply(ch, root, "社内レギュレーション_DBへの登録に失敗しました。"
                              "NotionでHermes Agentへの共有・権限を確認してもらえますか？")
@@ -827,6 +856,10 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
     d = convo.decide(ch, root, m, mode="filed" if filed else "confirm", extra_facts=xfacts)
     if not d:
         return None
+    if d.get("degraded") and not filed:
+        # GPT不通の断り文で「OK/却下」を消費しない＝決定論のlegacy裁定（_confirm_legacy）へ回す
+        # （2026-07-14 レビュー確定バグ: 不通中の承認が起票されずに断り文だけ返っていた）
+        return None
     action = d.get("action")
     if action == "answer":
         action = "answer_only"
@@ -856,6 +889,8 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
         if url:
             _reply(ch, root, reply, url)
             _log("company_rule", ch, root, m, url=url)
+        elif not notion._token():  # ローカル確認(DRY)と実API失敗を区別＝誤って権限確認を求めない
+            _reply(ch, root, reply + "（ローカル確認のため実際の保存はしていません）")
         else:
             _reply(ch, root, "社内レギュレーション_DBへの登録に失敗しました。"
                              "NotionでHermes Agentへの共有・権限を確認してもらえますか？")
@@ -1120,6 +1155,7 @@ def main():
     intake = runtime.load_json("chiaki_intake.json", {"items": {}})
     items = intake.setdefault("items", {})
     _expire_stale(items)
+    runtime.save_json("chiaki_intake.json", intake)  # 失効を即保存＝直後の走査例外で失効通知が二重投稿されない
     cand = _candidates(cur, items)
     if not cand:
         runtime.save_json("chiaki_intake.json", intake)  # 失効状態は保存
