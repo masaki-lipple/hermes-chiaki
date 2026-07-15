@@ -100,7 +100,9 @@ def _apply_kind_targets(actuals: list) -> int:
             continue  # 対象付き・種別なしは触らない
         for key, target in tgt.items():
             if key and target and name.startswith(key):
-                a["kind"] = f"{kind}（{target}）"
+                # kind2（ヒューリスティックの推定）も上書き＝集計は kind2 優先のため、辞書（戸田さんの
+                # 明示指定）が推定に負けない。BUZZ GOLF が kind2=（コンテンツ）で誤集計されていた実例
+                a["kind"] = a["kind2"] = f"{kind}（{target}）"
                 n += 1
                 break
     return n
