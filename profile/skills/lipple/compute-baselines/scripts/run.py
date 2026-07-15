@@ -84,6 +84,28 @@ def _push_to_notion(bl: dict) -> None:
           + (f" / 行未作成の種別={unmatched}" if unmatched else ""))
 
 
+def _apply_kind_targets(actuals: list) -> int:
+    """対象を推定できず無印になった種別を「案件名→対象」辞書（state/kind_targets.json・
+    例 {"BUZZ GOLF": "BUZZ GOLF", "白岩工業": "求人ページ"}）で「種別（対象）」へ振り直す。
+    2026-07-15 戸田「結局適正工数DBが更新されていない」＝流し込み（求人ページ）等の行に実測が
+    一度も入らない真因が、対象未特定の無印落ちだった（業務はあるのにDBのどの行にも載らない）。
+    案件名は前方一致＝「白岩工業①」等の枝番を吸収。一度教われば以後は自動で正しい行に集計される。"""
+    tgt = runtime.load_json("kind_targets.json", {})
+    if not tgt:
+        return 0
+    n = 0
+    for a in actuals:
+        kind, name = a.get("kind") or "", a.get("name") or ""
+        if not kind or "（" in kind or not name:
+            continue  # 対象付き・種別なしは触らない
+        for key, target in tgt.items():
+            if key and target and name.startswith(key):
+                a["kind"] = f"{kind}（{target}）"
+                n += 1
+                break
+    return n
+
+
 def main():
     actuals = []
     for p in sorted(glob.glob(str(runtime.STATE_DIR / "actuals_*.json"))):
@@ -91,6 +113,9 @@ def main():
             actuals += json.loads(Path(p).read_text(encoding="utf-8")).get("actuals", [])
         except (json.JSONDecodeError, OSError):
             continue
+    remapped = _apply_kind_targets(actuals)
+    if remapped:
+        print(f"[compute-baselines] kind_targets適用={remapped}件")
     bl = observe.compute_baselines(actuals)
     seed = {"_note": "compute-baselines が actuals_*.json から再構築",
             "n_actuals": len(actuals), **bl}
