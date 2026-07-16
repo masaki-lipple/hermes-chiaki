@@ -82,9 +82,9 @@ def _observed_channels() -> list[str]:
     try:
         chs = [((c.get("name") or ""), c["id"]) for c in source.list_bot_channels()
                if c.get("id") and c["id"] not in _OBSERVE_EXCLUDE]
-        # チャンネル名の英数字降順（2026-07-16 戸田）。Slackは<#id>を「チャンネル名」で表示するため、
-        # IDで並べると見た目がバラバラになる（ID降順にした直後の「なってない。」が実例）＝名前で並べる。
-        return [cid for _, cid in sorted(chs, reverse=True)] or [runtime.CH_YU_PDCA]
+        # チャンネル名の英数字昇順（2026-07-16 戸田）。Slackは<#id>を「チャンネル名」で表示するため、
+        # IDではなく、Slack上の表示名に対応する name で並べる。
+        return [cid for _, cid in sorted(chs)] or [runtime.CH_YU_PDCA]
     except Exception:
         return [runtime.CH_YU_PDCA]
 
