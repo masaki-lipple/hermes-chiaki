@@ -4,7 +4,9 @@ profile/.env
 secrets.env
 # local validation data (real Lipple data — keep off GitHub)
 fixtures/
-tests/
+tests/*
+# 回帰テストは合成データのみ＝リポジトリに含める（/tmp掃除・ignore巻き込みで2度消えかけた対策）
+!tests/regression/
 # runtime state (regenerated on the box)
 profile/state/channel_timers.json
 profile/state/plan_*.json
