@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""編集失敗→Issue提案への切り替え＋観測チャンネル降順（2026-07-16）のテスト。"""
+"""編集失敗→Issue提案への切り替え＋観測チャンネル昇順（2026-07-16）のテスト。"""
 import os, sys, types
 from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
 SCRATCH = Path(__file__).parent / "state_ep"
 import shutil; shutil.rmtree(SCRATCH, ignore_errors=True)  # 冪等性=前回の状態を残さない
 (SCRATCH / "state").mkdir(parents=True, exist_ok=True)
 os.environ["HERMES_PROFILE_DIR"] = str(SCRATCH)
-os.environ["HERMES_LIB"] = "/Users/malus_bot/Claude/Hermes"
-sys.path.insert(0, "/Users/malus_bot/Claude/Hermes")
+os.environ["HERMES_LIB"] = str(ROOT)
+sys.path.insert(0, str(ROOT))
 
 fake_llm = types.ModuleType("lib.llm")
 fake_llm.gpt = lambda *a, **k: ""
@@ -28,7 +29,7 @@ def check(name, cond):
 check("edit_post guidance in actions", "propose（issue=コード変更）" in convo.ACTIONS["edit_post"])
 
 # ── intake: 編集失敗(norevise)→Issue提案へ切り替え ──
-R = "/Users/malus_bot/Claude/Hermes/profile/skills/lipple/chiaki-intake/scripts/run.py"
+R = str(ROOT / "profile/skills/lipple/chiaki-intake/scripts/run.py")
 g = {"__file__": R, "__name__": "intake_mod"}
 exec(compile(open(R).read(), R, "exec"), g)
 posted = []
@@ -37,15 +38,15 @@ g["_bug_symptom"] = lambda *a, **k: None
 g["_maybe_edit_root"] = lambda *a, **k: "norevise"
 g["_progress_watch"] = lambda *a, **k: (lambda: None)
 convo.decide = lambda *a, **k: {"action": "edit_post", "reply": "了解です！並び替えます。",
-                                "instruction": "観測開始メッセージのチャンネル一覧を英数字降順にする"}
+                                "instruction": "観測開始メッセージのチャンネル一覧を英数字昇順にする"}
 items = {}
 m = {"ts": "10.0", "ts_float": 1.0, "user_id": runtime.TODA,
-     "text": "チャンネルの順番を英数字降順にしてほしい！"}
+     "text": "チャンネルの順番を英数字昇順にしてほしい！"}
 r = g["_propose_agent"](m, runtime.CH_CHIAKI_PDCA, "9.0", items)
 check("edit-fail pivots to proposal", r is not None and any("Issueに起票して" in t for t in posted))
 it = next(iter(items.values()), {})
 check("awaiting_confirm with issue bill", it.get("status") == "awaiting_confirm"
-      and it["proposals"][0]["type"] == "issue" and "降順" in it["proposals"][0]["要約"])
+      and it["proposals"][0]["type"] == "issue" and "昇順" in it["proposals"][0]["要約"])
 check("no dead-end canned text", not any("うまく汲み取れませんでした" in t for t in posted))
 
 # notfound は従来どおり聞き返す
@@ -64,13 +65,13 @@ r = g["_confirm_agent"](it2, dict(m, ts="12.0"), runtime.CH_CHIAKI_PDCA, "9.0")
 check("confirm edit-fail pivots", r == 1 and it2["status"] == "awaiting_confirm"
       and it2["proposals"][0]["issue_kind"] == "変更" and any("Issueに起票して" in t for t in posted))
 
-# ── chiaki-pdca: 観測チャンネル英数字降順 ──
-C = "/Users/malus_bot/Claude/Hermes/profile/skills/lipple/chiaki-pdca/scripts/run.py"
+# ── chiaki-pdca: 観測チャンネル英数字昇順 ──
+C = str(ROOT / "profile/skills/lipple/chiaki-pdca/scripts/run.py")
 gc = {"__file__": C, "__name__": "pdca_mod"}
 exec(compile(open(C).read(), C, "exec"), gc)
 source.list_bot_channels = lambda: [{"id": "C1", "name": "a010-zebra"}, {"id": "C2", "name": "c030-alpha"},
-                                    {"id": "C3", "name": "b020-mid"}]
-check("channels descending by NAME", gc["_observed_channels"]() == ["C2", "C3", "C1"])
+                                    {"id": "C3", "name": "b020-mid"}, {"id": "CT", "name": "t999-tail"}]
+check("channels ascending by NAME", gc["_observed_channels"]() == ["C1", "C3", "C2", "CT"])
 
 # ── 全LLM不通: 初回失敗だけ決定論の固定文・2回目以降は沈黙 ──
 from lib import ledger
