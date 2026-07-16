@@ -39,7 +39,9 @@ ACTIONS = {
             "返信に新しい指摘が同居していれば proposals に次の案。",
     "revise": "案の内容・振り分けの変更指示（「それRuleね」等）。proposals に修正版の全件。reply で新しい案を示して確認。",
     "cancel": "却下・見送り。",
-    "edit_post": "特定の投稿そのものを直す依頼。instruction に直し方を具体的に。",
+    "edit_post": "過去の特定の投稿そのものを直す依頼。instruction に直し方を具体的に。"
+                 "毎回の定型投稿・自動投稿の形式や仕組みを今後ずっと変える依頼（例: 毎朝の観測開始"
+                 "メッセージの並び順・書式の変更）は edit_post ではなく propose（issue=コード変更）にする。",
     "company_rule": "このルールを社内レギュレーション_DB（正本）にも登録する依頼。company に "
                     '{"rule","content","category"(用字・表記|数字・英字|記号・約物|文末・語尾|表現・NG|体裁・構成),"wrong","right"}。',
     "codex_continue": "進行中のCodex作業への追加指示・やり直し。instruction に Codex への指示を具体的に。reply は着手の一言。",

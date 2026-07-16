@@ -82,7 +82,8 @@ def _observed_channels() -> list[str]:
     try:
         chs = [c["id"] for c in source.list_bot_channels()
                if c.get("id") and c["id"] not in _OBSERVE_EXCLUDE]
-        return sorted(chs) or [runtime.CH_YU_PDCA]
+        # 英数字降順（2026-07-16 戸田「チャンネルの順番を英数字降順にしてほしい」。昇順は2026-07-13指示）
+        return sorted(chs, reverse=True) or [runtime.CH_YU_PDCA]
     except Exception:
         return [runtime.CH_YU_PDCA]
 

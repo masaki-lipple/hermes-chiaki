@@ -725,6 +725,16 @@ def _propose_agent(m: dict, ch: str, root: str, items: dict):
         if sym:
             return _await(items, m, ch, root, [sym])
         st = _maybe_edit_root(ch, root, d.get("instruction") or m["text"], m["text"])
+        if st == "norevise":
+            # 編集の実行部が失敗（LLM不調等）＝行き止まりの定型文で終わらせず、Issue提案へ切り替える
+            # （2026-07-16 実バグ:「了解です！並び替えます」→1分後「うまく汲み取れませんでした」の矛盾2連投。
+            # 方向性メッセージと本応答が支離滅裂になり、依頼も宙に浮いた）
+            instr = (d.get("instruction") or m["text"]).strip()[:200]
+            bill = _norm_item({"type": "issue", "issue_kind": "変更", "要約": instr[:60],
+                               "詳細": instr, "確信度": 0.8})
+            return _await(items, m, ch, root, [bill], reply_text=(
+                "投稿の直接編集がうまくできなかったので、コード側の変更としてIssueに起票して"
+                f"Codexに直させます。この内容で登録していいですか？\n• {instr[:120]}"))
         _reply(ch, root, reply if st == "edited" else _EDIT_MSG[st])
         _log("edit", ch, root, m, 結果=st)
         return _mark_done(items, m, ch, root)
@@ -954,6 +964,14 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
 
     if action == "edit_post":
         st = _maybe_edit_root(ch, root, d.get("instruction") or m["text"], m["text"])
+        if st == "norevise":  # 編集失敗＝Issue提案へ切り替え（初回応対と同じ・行き止まりにしない）
+            instr = (d.get("instruction") or m["text"]).strip()[:200]
+            it["proposals"] = [_norm_item({"type": "issue", "issue_kind": "変更", "要約": instr[:60],
+                                           "詳細": instr, "確信度": 0.8})]
+            it["status"], it["propose_count"] = "awaiting_confirm", 1
+            _reply(ch, root, "投稿の直接編集がうまくできなかったので、コード側の変更としてIssueに"
+                             f"起票してCodexに直させます。この内容で登録していいですか？\n• {instr[:120]}")
+            return 1
         _reply(ch, root, reply if st == "edited" else _EDIT_MSG[st])
         _log("edit", ch, root, m, 結果=st)
         return 1
