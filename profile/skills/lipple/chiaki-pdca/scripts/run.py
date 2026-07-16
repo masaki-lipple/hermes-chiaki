@@ -80,10 +80,11 @@ def _observed_channels() -> list[str]:
     """観測対象＝bot が参加する業務チャンネル全部（新しく招待されたchも自動で含む）。
     取得失敗時は最低限 #5035 だけ返す（朝の報告を空にしない）。"""
     try:
-        chs = [c["id"] for c in source.list_bot_channels()
+        chs = [((c.get("name") or ""), c["id"]) for c in source.list_bot_channels()
                if c.get("id") and c["id"] not in _OBSERVE_EXCLUDE]
-        # 英数字降順（2026-07-16 戸田「チャンネルの順番を英数字降順にしてほしい」。昇順は2026-07-13指示）
-        return sorted(chs, reverse=True) or [runtime.CH_YU_PDCA]
+        # チャンネル名の英数字降順（2026-07-16 戸田）。Slackは<#id>を「チャンネル名」で表示するため、
+        # IDで並べると見た目がバラバラになる（ID降順にした直後の「なってない。」が実例）＝名前で並べる。
+        return [cid for _, cid in sorted(chs, reverse=True)] or [runtime.CH_YU_PDCA]
     except Exception:
         return [runtime.CH_YU_PDCA]
 

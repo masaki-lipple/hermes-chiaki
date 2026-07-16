@@ -1282,9 +1282,19 @@ def main():
         except Exception as e:
             failed.add(ch)
             print(f"[intake] error ch={ch} ts={m['ts']}: {e}")
+            prior = ledger.entry(ledger.event_id(ch, m["ts"])).get("status")
             ledger.record(ledger.event_id(ch, m["ts"]), ch=ch, thread_root=root, ts=m["ts"],
                           kind="intake", owner="intake", status="failed",
                           note=f"{type(e).__name__}: {e}"[:120])
+            # 全LLM同時不通（GPT不調+Anthropic 529等）でも黙らない＝初回失敗時だけ決定論の固定文で
+            # 状況を伝える（2026-07-16 15:15 実バグ: 両LLM死亡で例外→無言、戸田さん「とまっている」）。
+            # 再試行はカーソル未前進の走査が続けるので、復旧すれば本応答が改めて届く。
+            if prior != "failed" and m.get("user_id") == runtime.TODA:
+                try:
+                    _reply(ch, root, "すみません、いま応答システム全体が不調で返答を作れませんでした。"
+                                     "自動で再試行するので、復旧し次第このスレッドに改めて返信します！")
+                except Exception:
+                    pass
     runtime.save_json("chiaki_intake.json", intake)
     for ch, mx in maxts.items():
         cur[ch] = max(float(cur.get(ch, 0.0)), mx)

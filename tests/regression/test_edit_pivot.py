@@ -68,7 +68,27 @@ check("confirm edit-fail pivots", r == 1 and it2["status"] == "awaiting_confirm"
 C = "/Users/malus_bot/Claude/Hermes/profile/skills/lipple/chiaki-pdca/scripts/run.py"
 gc = {"__file__": C, "__name__": "pdca_mod"}
 exec(compile(open(C).read(), C, "exec"), gc)
-source.list_bot_channels = lambda: [{"id": "CAAA"}, {"id": "CZZZ"}, {"id": "CMMM"}]
-check("channels descending", gc["_observed_channels"]() == ["CZZZ", "CMMM", "CAAA"])
+source.list_bot_channels = lambda: [{"id": "C1", "name": "a010-zebra"}, {"id": "C2", "name": "c030-alpha"},
+                                    {"id": "C3", "name": "b020-mid"}]
+check("channels descending by NAME", gc["_observed_channels"]() == ["C2", "C3", "C1"])
+
+# ── 全LLM不通: 初回失敗だけ決定論の固定文・2回目以降は沈黙 ──
+from lib import ledger
+posted.clear()
+def boom(*a, **k):
+    raise RuntimeError("529 all llm down")
+g["_find_awaiting"] = lambda *a, **k: None
+g["_propose_agent"] = boom
+g["_handle_propose"] = boom
+g["_candidates"] = lambda cur, items: []
+g["_ledger_candidates"] = lambda items: [
+    ({"ts": "50.0", "ts_float": 50.0, "user_id": runtime.TODA, "text": "これ直して"}, "49.0", "CX", "")]
+runtime.save_json("chiaki_intake.json", {"items": {}})
+runtime.save_json("tuning_cursor.json", {"__scan__": runtime.now_ts()})
+g["main"]()
+check("first failure -> honest note", any("不調" in t for t in posted))
+posted.clear()
+g["main"]()
+check("second failure -> silent", not posted)
 
 print(f"\n{ok} checks passed")
