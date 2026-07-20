@@ -103,6 +103,7 @@ gp["_context_precheck"] = lambda *a, **k: None
 gp["_target"] = lambda ch: ("U09T44VEZM1", "松永")
 gp["_rules"] = lambda: {}
 gp["_permalink"] = lambda ch, ts: "http://x"
+runtime.is_jp_workday = lambda ts=None: True  # 祝日・週末でも落ちない（2026-07-20 海の日に営業日ガードで発覚）
 source.post_message = lambda ch, text: {"ok": True, "ts": "900.0"}
 gp["main"]()
 pend = runtime.load_json("pending_approvals.json", {})
