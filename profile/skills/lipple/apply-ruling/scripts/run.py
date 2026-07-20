@@ -317,10 +317,14 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
         return 0
     if it.pop("empty_reads", None):
         _save(pend)
-    # 対象者の最新の完了報告（chiaki へのメンション or 完了語）。未来形・着手宣言は報告扱いしない。
+    # 最新の完了報告（chiaki へのメンション or 完了語）。未来形・着手宣言は報告扱いしない。
+    # 報告者は対象者本人に限定しない＝「Aさんの投稿をBさんが直す」がありうる（2026-07-17 実バグ:
+    # 実際は松下さんの修正なのに、対象者名で「松永さんが修正を完了しました」と誤通知した型の根治）。
     report = None
     for m in replies:
-        if m.get("user_id") != tgt or float(m.get("ts", "0")) <= float(nudge_ts):
+        uid = m.get("user_id") or ""
+        if (not uid.startswith("U") or uid == runtime.CHIAKI_SELF
+                or float(m.get("ts", "0")) <= float(nudge_ts)):
             continue
         txt = m.get("text", "")
         if _FUTURE_RE.search(txt) and not any(w in txt for w in COMPLETE_WORDS):
@@ -331,19 +335,22 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
 
     if fixed is True or (fixed is None and report):
         # 完了（検証OK、または検証不能だが報告あり）→ お礼＋戸田さんへ完了通知
-        source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_thanks()}")
+        completer = (report or {}).get("user_id") or ""
+        source.post_thread_reply(src_ch, src_ts, f"<@{completer or tgt}>\n{_thanks()}")
         done_ts = report["ts"] if report else src_ts
         it["status"], it["completion_ts"] = "completed", done_ts
         _save(pend)  # お礼投稿直後に永続化＝以降の例外で二重お礼しない
         link = _permalink(src_ch, src_ts, src_ts)  # 該当箇所（修正された元メッセージ）への直リンク
-        # 対象者名はハードコードしない（多チャンネル化で対象は松永さんとは限らない＝
-        # 2026-07-10 実バグ: 松下さんの修正を「松永さんが修正を完了しました」と誤通知）
-        who = it.get("target_name") or ""
-        if not who or who == "担当者":
-            who = source.user_display_name(tgt) or "対象者"
+        # 通知の名義は「実際に完了報告をした人」。報告が無い完了（自動検証のみ）は人名を断定しない
+        # （2026-07-10/07-17 実バグ: 名前の取り違え通知の根治＝推測で人名を書かない）。
+        if completer:
+            who = source.user_display_name(completer) or it.get("target_name") or "担当者"
+            body = f"{who}さんが修正を完了しました。"
+        else:
+            body = "対象の投稿が修正されていることを確認しました（完了報告は無し・自動検証OK）。"
         source.post_thread_reply(
             runtime.CH_CHIAKI_MGMT, tts,
-            f"<@{runtime.TODA}>\n{who}さんが修正を完了しました。\n\n{link}\n\nーーーーー")
+            f"<@{runtime.TODA}>\n{body}\n\n{link}\n\nーーーーー")
         runtime.append_jsonl("rulings.jsonl", {
             "ts": runtime.now_ts(), "thread_ts": tts, "verdict": "completed",
             "kind": it.get("finding_kind", ""), "completion_ts": done_ts})
