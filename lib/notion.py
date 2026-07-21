@@ -27,7 +27,7 @@ def _token() -> str:
 KOUSU_DB = "5b02889e5af24bd09fcd3b206d43fab6"
 # 社内レギュレーション_DB（コンテンツマーケの正本・2026-07-08 戸田「社内のレギュレーションも調整したい」）
 COMPANY_REG_DB = "2a1b88bf93264ffcaaf5e6608871b5e0"
-# 実行台帳_Chiaki_AI_DB（閲覧用の控え・ledger-notionが日次同期。2026-07-21 戸田「Notionで実装したい」。
+# Execution_Ledger_Chiaki_AI_DB（閲覧用の控え・ledger-notionが日次同期。2026-07-21 戸田「Notionで実装したい」。
 # 正本はVPSローカル state/exec_ledger.jsonl。⚠️Hermes Agentインテグレーションへの共有が必要）
 EXEC_LEDGER_DB = "feebcb60fb0540d7b3968d44931f55a8"
 # select は既存オプション名のみ送る（未知値は Notion が自動再作成する＝Rule Registry の chiaki 再発事故の教訓）

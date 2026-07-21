@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ledger-notion: 実行台帳を実行台帳_Chiaki_AI_DB（Notion）へ日次同期（決定論・LLM非起動）。
+"""ledger-notion: 実行台帳をExecution_Ledger_Chiaki_AI_DB（Notion）へ日次同期（決定論・LLM非起動）。
 cron: 40 21 * * 1-5。正本はローカル・NotionはIDで冪等に追記/更新する閲覧用の控え。"""
 from __future__ import annotations
 
