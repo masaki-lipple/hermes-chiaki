@@ -30,7 +30,9 @@ NAMES = {"U9R35H06L": "Masaki Toda", "U09T44VEZM1": "Yu Matsunaga", "U9UA8NQCB":
 ACTIONS = {
     "propose": "新しい指摘・依頼を起票の確認にかける。proposals に案（type=issue|rule・issue_kind=バグ|変更|新機能|その他・"
                "rule_kind=用語|レギュレーション|スタイル・要約・詳細・routine）。起票は必ず確認後＝この場で登録はしない。"
-               "reply で案の中身を自然に示して確認を求める（「登録してもいいですか？」の紋切りにしない）。",
+               "reply で案の中身を自然に示し、「イシューとして処理しますか？」と確認する（2026-07-21 戸田指定の聞き方）。"
+               "テスト・運用・コードを良くする改善の話題が出たとき（あなた自身が改善を思いついたときも含む）は、"
+               "流さず・勝手に進めず、必ずこのアクションで確認にかける。",
     "file": "提示済みの案の登録を承認された（OK/はい/Issueに追加で 等。他の話が同居していても承認が含まれていれば file）。"
             "reply には登録した旨＋同居していた話への応答（URLはシステムが付ける）。"
             'issueの場合 "codex": true/false＝コードの修正・変更・機能追加なら true（そのままCodexが実装・既定）、'
@@ -57,8 +59,11 @@ MODES = {
     "initial": ("propose", "edit_post", "retract", "company_rule", "answer", "silent"),
     "confirm": ("file", "revise", "cancel", "edit_post", "company_rule", "retract", "answer"),
     "filed": ("propose", "company_rule", "retract", "edit_post", "answer"),
-    "codex_thread": ("codex_continue", "deploy_request", "retract", "company_rule", "answer"),
+    "codex_thread": ("codex_continue", "deploy_request", "retract", "company_rule", "answer", "propose"),
 }
+# codex_thread の propose: 進行中ブランチと別の新しい改善案が出たとき用。runner が確認を出し、
+# 以降の「OK」は intake の確認ターンへ引き継がれて起票される（2026-07-21 戸田「イシューとして
+# 処理しますか？ってきいてほしい」）。現在の作業の続き・手直しは従来どおり codex_continue。
 
 
 def display_name(uid: str) -> str:

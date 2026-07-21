@@ -204,7 +204,7 @@ def _process_threads() -> None:
             amap = {"codex_continue": "continue", "deploy_request": "deploy", "answer": "chat"}
             act = {"action": amap.get(cd["action"], cd["action"]),
                    "reply": cd.get("reply") or "", "instruction": cd.get("instruction") or "",
-                   "company": cd.get("company") or {}}
+                   "company": cd.get("company") or {}, "proposals": cd.get("proposals") or []}
         if not act:
             act = _classify_thread_reply(t, text)
         if not act:
@@ -225,6 +225,30 @@ def _process_threads() -> None:
             convo.commit()  # Phase C: 会話コアの判断を採用＝会話台帳へ
         action = act.get("action")
         reply = (act.get("reply") or "").strip()
+        if action == "propose":
+            # 進行中ブランチと別の新しい改善案＝「イシューとして処理しますか？」の確認を出し、
+            # 以降の返事は intake の確認ターンへ引き継ぐ（listener は確認ターン優先ルーティング済み。
+            # 2026-07-21 戸田「テストや何かを改善しようとしたら、イシューとして処理しますか？ってきいてほしい」）
+            bills = [p for p in (act.get("proposals") or [])
+                     if isinstance(p, dict) and p.get("type") in ("issue", "rule")
+                     and (p.get("要約") or "").strip()]
+            if bills and reply:
+                mts = new[-1].get("ts") or str(now)
+                link = (f"https://lipple.slack.com/archives/{tch}/p{mts.replace('.', '')}"
+                        f"?thread_ts={tts}&cid={tch}")
+                intake_reg = runtime.load_json("chiaki_intake.json", {"items": {}})
+                intake_reg.setdefault("items", {})[mts] = {
+                    "status": "awaiting_confirm", "channel": tch, "thread_root": tts,
+                    "proposals": bills, "propose_count": 1, "permalink": link,
+                    "last_seen_ts": mts, "mention_ts": mts,
+                    "mention_text": text[:300], "proposed_at": runtime.now_ts()}
+                runtime.save_json("chiaki_intake.json", intake_reg)
+                _reply(tts, reply, ch=tch)
+                print(f"[codex-runner] thread {tts} -> propose (intake確認ターンへ引き継ぎ)")
+            elif reply:
+                _reply(tts, reply, ch=tch)
+                print(f"[codex-runner] thread {tts} -> propose(案なし)=返事のみ")
+            continue
         if action == "retract":
             _reply(tts, reply or "失礼しました！さきほどの投稿は誤りでした。", ch=tch)
             print(f"[codex-runner] thread {tts} -> retract")
