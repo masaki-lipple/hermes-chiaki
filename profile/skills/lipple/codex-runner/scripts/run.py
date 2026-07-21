@@ -226,7 +226,7 @@ def _process_threads() -> None:
         action = act.get("action")
         reply = (act.get("reply") or "").strip()
         if action == "propose":
-            # 進行中ブランチと別の新しい改善案＝「イシューとして処理しますか？」の確認を出し、
+            # 進行中ブランチと別の新しい改善案＝「Issueとして処理しますか？」の確認を出し、
             # 以降の返事は intake の確認ターンへ引き継ぐ（listener は確認ターン優先ルーティング済み。
             # 2026-07-21 戸田「テストや何かを改善しようとしたら、イシューとして処理しますか？ってきいてほしい」）
             bills = [p for p in (act.get("proposals") or [])

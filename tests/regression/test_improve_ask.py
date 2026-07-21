@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""改善話題→「イシューとして処理しますか？」確認（2026-07-21 戸田）のテスト。"""
+"""改善話題→「Issueとして処理しますか？」確認（2026-07-21 戸田・表記は英字Issue）のテスト。"""
 import json, os, sys, types
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,7 +27,8 @@ def check(name, cond):
 
 # 1. 会話コア: 全モードでproposeが許可され、聞き方の指定がプロンプトに載る
 check("codex_thread allows propose", "propose" in convo.MODES["codex_thread"])
-check("ask phrase in guidance", "イシューとして処理しますか" in convo.ACTIONS["propose"])
+check("ask phrase in guidance", "Issueとして処理しますか" in convo.ACTIONS["propose"])
+check("katakana banned in guidance", "「イシュー」と書かない" in convo.ACTIONS["propose"])
 check("improvement topics covered", "改善" in convo.ACTIONS["propose"])
 
 # 2. codex-runner: propose → intake確認ターンへ引き継ぎ
@@ -46,7 +47,7 @@ source.read_thread = lambda ch, root: [
     {"ts": "501.0", "ts_float": now - 60, "user_id": runtime.TODA,
      "text": "ついでにこの辺のテストも整備したいね"}]
 convo.decide = lambda *a, **k: {"action": "propose",
-                                "reply": "テスト整備、イシューとして処理しますか？",
+                                "reply": "テスト整備、Issueとして処理しますか？",
                                 "proposals": [{"type": "issue", "issue_kind": "変更",
                                                "要約": "テストの整備", "詳細": "x"}]}
 convo.already_replied = lambda ch, ts: False
@@ -56,7 +57,7 @@ items = runtime.load_json("chiaki_intake.json", {"items": {}})["items"]
 check("handoff to intake awaiting", "501.0" in items and items["501.0"]["status"] == "awaiting_confirm")
 check("proposal carried", items["501.0"]["proposals"][0]["要約"] == "テストの整備")
 check("permalink built", "archives/C0BC6PPG013/p501" in items["501.0"]["permalink"])
-check("ask posted", any("イシューとして処理しますか" in t for _, _, t in posted))
+check("ask posted", any("Issueとして処理しますか" in t for _, _, t in posted))
 reg = runtime.load_json("codex_threads.json", {})["items"]["500.0"]
 check("last_seen advanced", float(reg["last_seen_ts"]) >= now - 60)
 
