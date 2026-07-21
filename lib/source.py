@@ -233,8 +233,26 @@ def _blank_before_bullets(text: str) -> str:
     return "\n".join(out)
 
 
+def _blank_before_urls(text: str) -> str:
+    """本文行の直後にURL行が続く場合、空行を1つ入れる（2026-07-21 戸田「URLの上は改行したい」）。
+    連続するURL行の間には入れない（リンクの塊は保つ）。コードフェンス内・行中のURLは触らない。
+    箇条書きの空行と同じく投稿の出口で全投稿に適用＝どのスキル・手書きでも同じ整形。"""
+    import re as _re
+    url = _re.compile(r"^[ \t　]*<?https?://")
+    out: list[str] = []
+    in_fence = False
+    for line in (text or "").split("\n"):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        if (url.match(line) and not in_fence and out and out[-1].strip()
+                and not url.match(out[-1])):
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
 def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
-    text = _blank_before_bullets(_ensure_mention(channel_id, text))
+    text = _blank_before_urls(_blank_before_bullets(_ensure_mention(channel_id, text)))
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id} thread={thread_ts}\n  {text}")
         return {"ok": True, "dry": True}
@@ -243,7 +261,7 @@ def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
 
 
 def post_message(channel_id: str, text: str) -> dict:
-    text = _blank_before_bullets(_ensure_mention(channel_id, text))
+    text = _blank_before_urls(_blank_before_bullets(_ensure_mention(channel_id, text)))
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id}\n  {text}")
         return {"ok": True, "dry": True}
@@ -253,7 +271,7 @@ def post_message(channel_id: str, text: str) -> dict:
 def update_message(channel_id: str, ts: str, text: str) -> dict:
     """自分(chiaki)の既存投稿を編集（chat.update）。学習内容を投稿に反映する用。
     blocks は常に空で送る＝旧 rich_text ブロック付き投稿もプレーンテキスト表示へ揃える。"""
-    text = _blank_before_bullets(_ensure_mention(channel_id, text))
+    text = _blank_before_urls(_blank_before_bullets(_ensure_mention(channel_id, text)))
     if FIXTURES or not _TOKEN:
         print(f"[DRY update] ch={channel_id} ts={ts}\n  {text}")
         return {"ok": True, "dry": True}
