@@ -187,29 +187,42 @@ def _strip_model_tag_tail(text: str) -> str:
         s = ns
 
 
-def append_model_tag(text: str, tag: str) -> str:
-    """LLM使用モデル表記を1つだけ、最後の本文行の文末へ続けて付ける。
+_MODEL_TAG_ONLY = re.compile(rf"^{_MODEL_TAG.pattern}$")
 
-    既に本文末に（GPT）等が含まれる場合は剥がしてから自動付与し直す。末尾がURL行なら
-    URLを壊さないよう、その直前の本文行へ付ける。
+
+def append_model_tag(text: str, tag: str) -> str:
+    """LLM使用モデル表記を1つだけ付ける（2026-07-21 戸田最終指定:
+    「テキストのときは改行なし、URLが最後のときは改行あり」）。
+
+    - テキストで終わる投稿 → 最後の本文行の文末に続けて付ける（改行なし）。
+    - URL行で終わる投稿 → 末尾に独立行で付ける（本文の途中に食い込ませない）。
+    二重付与の防止: 末尾のタグ単独行と、最後の本文行の行末に紛れ込んだタグは剥がしてから付け直す。
     """
     tag = (tag or "").strip()
     if not tag:
         return text
     suffix = f"（{tag}）"
-    lines = _strip_model_tag_tail(text or "").split("\n")
-    target = None
-    for i in range(len(lines) - 1, -1, -1):
-        stripped = lines[i].strip()
-        if not stripped or _URL_LINE.match(stripped):
-            continue
-        target = i
-        break
-    if target is None:
-        base = "\n".join(lines).rstrip()
-        return f"{base}{suffix}" if base else suffix
-    line = _strip_model_tag_tail(lines[target])
-    if line and line[-1] not in _PUNCT_END:
-        line += "。"
-    lines[target] = line + suffix
-    return "\n".join(lines).rstrip()
+    lines = (text or "").rstrip().split("\n")
+    cleaned: list[str] = []
+    seen_text = False
+    for ln in reversed(lines):
+        s = ln.strip()
+        if not seen_text and s:
+            if _MODEL_TAG_ONLY.match(s):
+                continue  # 末尾側のタグ単独行は捨てて付け直す
+            if not _URL_LINE.match(s):
+                ln = _strip_model_tag_tail(ln)  # 最後の本文行の行末タグを剥がす
+                if ln.strip() and ln.rstrip()[-1] not in _PUNCT_END:
+                    ln = ln.rstrip() + "。"
+                seen_text = True
+                if not ln.strip():
+                    continue
+        cleaned.append(ln)
+    base = "\n".join(reversed(cleaned)).rstrip()
+    if not base:
+        return suffix
+    out = base.split("\n")
+    if _URL_LINE.match(out[-1].strip()):
+        return f"{base}\n{suffix}"  # URL終わり＝独立行（URLを壊さない・本文に食い込ませない）
+    out[-1] = out[-1].rstrip() + suffix  # テキスト終わり＝文末に続ける（句読点は上で担保済み）
+    return "\n".join(out)

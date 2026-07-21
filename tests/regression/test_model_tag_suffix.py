@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""モデル表記を二重付与せず、本文の文末へ続けるテスト。"""
+"""モデル表記のテスト（2026-07-21 戸田最終指定: テキスト終わり=文末に続ける/URL終わり=独立行）。"""
 import os
 import sys
 import types
@@ -35,9 +35,11 @@ check("inline duplicate collapsed",
       runtime.append_model_tag("特定できません。（GPT）\n（GPT）", "GPT") == "特定できません。（GPT）")
 check("missing punctuation restored",
       runtime.append_model_tag("特定できません（GPT）", "GPT") == "特定できません。（GPT）")
-check("url line preserved",
+check("tag goes after trailing url",
       runtime.append_model_tag("登録しました！（GPT）\nhttps://app.notion.com/p/abc", "GPT")
-      == "登録しました！（GPT）\nhttps://app.notion.com/p/abc")
+      == "登録しました！\nhttps://app.notion.com/p/abc\n（GPT）")
+check("plain text inline (改行なし)",
+      runtime.append_model_tag("了解です！", "GPT 5.5") == "了解です！（GPT 5.5）")
 
 posted = []
 source.post_thread_reply = lambda ch, ts, text: posted.append((ch, ts, text)) or {"ok": True, "ts": "77.7"}
@@ -53,8 +55,8 @@ check("intake tag single", out.count("（GPT）") == 1)
 posted.clear()
 gi["_reply"]("C1", "10.0", "登録しました！（GPT）", "https://app.notion.com/p/abc")
 out = posted[-1][2]
-check("intake url after tagged sentence",
-      "登録しました！（GPT）\nhttps://app.notion.com/p/abc" in out)
+check("intake tag after trailing url",
+      "登録しました！\nhttps://app.notion.com/p/abc\n（GPT）" in out)
 check("intake url tag single", out.count("（GPT）") == 1)
 
 C = str(ROOT / "profile/skills/lipple/codex-runner/scripts/run.py")
