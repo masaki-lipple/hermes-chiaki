@@ -60,14 +60,14 @@ log = SCRATCH / "state" / "cron.log"
 log.write_text("old garbage\n")
 st = {}
 check("log first run no warns", gh["_log_missing"](st, now) == [] and st["log_offset"] == log.stat().st_size)
-st["log_checked_ts"] = now - 4 * 86400  # 前回=4日前＝窓に営業日が丸ごと入る
+st["log_checked_ts"] = now - 10 * 86400  # 前回=10日前＝連休(週末+祝日)を挟んでも窓に営業日が丸ごと入る
 # 差分に全タグ → 警告なし
 with open(log, "a") as f:
     for tag in gh["LOG_EXPECT"].values():
         f.write(f"{tag} something\n")
 check("log all present", gh["_log_missing"](st, now) == [])
 # 差分に task-follow が無い → 警告
-st["log_checked_ts"] = now - 4 * 86400
+st["log_checked_ts"] = now - 10 * 86400
 with open(log, "a") as f:
     for name, tag in gh["LOG_EXPECT"].items():
         if name != "task-follow":
@@ -81,7 +81,7 @@ with open(log, "a") as f:
 check("log weekend window skipped", gh["_log_missing"](st, T(2026, 7, 13, 8, 40)) == [])
 # ログ縮小（ローテーション）→ 先頭から読み直して落ちない
 log.write_text("[intake] tiny\n")
-st["log_checked_ts"] = now - 4 * 86400
+st["log_checked_ts"] = now - 10 * 86400
 check("log shrink safe", isinstance(gh["_log_missing"](st, now), list))
 
 # _ledger_stale
