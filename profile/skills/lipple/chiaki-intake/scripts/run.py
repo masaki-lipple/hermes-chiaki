@@ -227,7 +227,7 @@ def _reply(ch: str, root: str, body: str, url: str = "") -> None:
         from lib import llm
         tag = llm.last_used()
         if tag:
-            b += f"\n（{tag}）"
+            b = runtime.append_model_tag(b, tag)
     except Exception:
         pass
     source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{b}")
