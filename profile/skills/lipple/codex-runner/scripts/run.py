@@ -92,7 +92,7 @@ def _fmt(body: str) -> str:
         from lib import llm
         tag = llm.last_used()
         if tag:
-            b += f"\n（{tag}）"
+            b = runtime.append_model_tag(b, tag)
     except Exception:
         pass
     return f"<@{runtime.TODA}>\n{b}"
