@@ -72,6 +72,33 @@ check("new row created", len(made) == 1 and made[0]["ID"]["rich_text"][0]["text"
 check("changed row updated", len(upd) == 1 and upd[0][0] == "pg1")
 check("select props shape", made[0]["状態"]["select"]["name"] == "裁定済み")
 
+# 発話者は固定表記（convo.NAMES）＝Slack表示名（「戸田」）の揺らぎを持ち込まない
+# （2026-07-23 戸田「発話者がゆらいでいる、Masaki Toda〜といった表記で固定」）
+check("actor fixed notation (not display name)",
+      made[0]["発話者"]["rich_text"][0]["text"]["content"] == "Masaki Toda")
+
+# 既存行の発話者ズレは14日窓の外でも修復＋Chiaki AI自身も固定表記
+old = now - 20 * 86400
+es3 = [{"id": "C3:30.0", "at": old, "source": "listener", "actor": "U9R35H06L", "ch": "C1",
+        "ts": "30.0", "text": "古い依頼", "owner": "intake", "status": "received"},
+       {"id": "C3:30.0", "at": old + 10, "status": "handled"}]
+es4 = [{"id": "C4:40.0", "at": now - 40, "actor": "U0BCCMPKD54", "ch": "C1", "ts": "40.0",
+        "text": "自分の投稿", "owner": "apply", "status": "handled"}]
+for e in es3 + es4:
+    runtime.append_jsonl(ledger.FILE, e)
+s1, s3 = g["summarize"](es), g["summarize"](es3)
+g["_existing_rows"] = lambda: {
+    "C1:10.0": {"page_id": "pg1", "trans": s1["trans"], "outcome": s1["outcome"], "actor": "Masaki Toda"},
+    "C2:20.0": {"page_id": "pg2", "trans": s2["trans"], "outcome": s2["outcome"], "actor": "Masaki Toda"},
+    "C3:30.0": {"page_id": "pg3", "trans": s3["trans"], "outcome": s3["outcome"], "actor": "戸田"}}
+made.clear(); upd.clear()
+g["main"]()
+check("actor drift repaired outside window",
+      [u[0] for u in upd] == ["pg3"]
+      and upd[0][1]["発話者"]["rich_text"][0]["text"]["content"] == "Masaki Toda")
+check("self actor -> Chiaki AI",
+      len(made) == 1 and made[0]["発話者"]["rich_text"][0]["text"]["content"] == "Chiaki AI")
+
 # 未共有（query失敗）は静かにスキップ
 g["_existing_rows"] = lambda: None
 made.clear(); upd.clear()

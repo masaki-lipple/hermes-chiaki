@@ -24,7 +24,10 @@ import time
 
 from lib import runtime, source
 
-NAMES = {"U9R35H06L": "Masaki Toda", "U09T44VEZM1": "Yu Matsunaga", "U9UA8NQCB": "Risa Nemoto"}
+# 人物の固定表記（正本）。Slackの表示名は可変＝表示にはこのマップを最優先で使う
+# （2026-07-23 戸田「発話者がゆらいでいる、Masaki Toda、Yu Matsunaga、Risa Nemotoといった表記で固定」）。
+NAMES = {"U9R35H06L": "Masaki Toda", "U09T44VEZM1": "Yu Matsunaga", "U9UA8NQCB": "Risa Nemoto",
+         runtime.CHIAKI_SELF: "Chiaki AI"}
 
 # 統一アクション集合（説明はそのままプロンプトに載る）
 ACTIONS = {

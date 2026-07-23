@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().parents[5]))
-from lib import ledger, notion, runtime, source  # noqa: E402
+from lib import convo, ledger, notion, runtime, source  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
 ST_JP = {"handled": "処理済み", "ruled": "裁定済み", "ok": "実行成功", "failed": "失敗",
@@ -105,6 +105,7 @@ def _existing_rows() -> dict | None:
                 out[eid] = {
                     "page_id": pg["id"],
                     "trans": "".join(t.get("plain_text", "") for t in (pr.get("遷移", {}).get("rich_text") or [])),
+                    "actor": "".join(t.get("plain_text", "") for t in (pr.get("発話者", {}).get("rich_text") or [])),
                     "outcome": ((pr.get("状態", {}).get("select") or {}).get("name")) or ""}
         if not res.get("has_more"):
             break
@@ -135,14 +136,21 @@ def main() -> None:
     for eid, es in events.items():
         s = summarize(es)
         if s["actor"] and s["actor"] not in actor_names:
-            actor_names[s["actor"]] = source.user_display_name(s["actor"]) or s["actor"]
+            # 発話者は固定表記（convo.NAMES）を最優先＝Slack表示名の揺らぎをDBへ持ち込まない
+            # （2026-07-23 戸田「発話者がゆらいでいる、Masaki Toda〜といった表記で固定」）
+            actor_names[s["actor"]] = (convo.NAMES.get(s["actor"])
+                                       or source.user_display_name(s["actor"]) or s["actor"])
         cur = existing.get(eid)
         if cur is None:
             if notion._create_page(notion.EXEC_LEDGER_DB, _props(eid, s, ch_names, actor_names),
                                    "exec-ledger"):
                 created += 1
-        elif (now - s["first_at"] < UPDATE_WINDOW_SEC
-              and (cur["trans"] != s["trans"] or cur["outcome"] != s["outcome"])):
+            continue
+        changed = (now - s["first_at"] < UPDATE_WINDOW_SEC
+                   and (cur["trans"] != s["trans"] or cur["outcome"] != s["outcome"]))
+        # 発話者の表記が固定表記とズレている行は14日窓に関係なく直す（既存行の揺らぎも一掃）
+        drift = cur.get("actor", "") != actor_names.get(s["actor"], s["actor"] or "—")
+        if changed or drift:
             if notion.update_page_props(cur["page_id"], _props(eid, s, ch_names, actor_names)):
                 updated += 1
     print(f"[ledger-notion] 追加={created} 更新={updated} 既存={len(existing)}")
