@@ -1145,12 +1145,55 @@ def _handle_retract(m: dict, ch: str, root: str) -> int:
     """柱2（2026-07-07 戸田「もっと会話をスマートに」）: Chiaki AI の直前のアクションが誤り
     （宛先違い・内容違い・不要）という指摘への自己訂正。①スレッド内の直近の実質投稿に
     取り消し注記を編集で追記（削除しない＝記録を残す） ②紐づく裁定を retracted でクローズ
-    ③率直な謝罪と言い直しの返事（GPT・文脈込み）。従来は Issue 提案に逃げて会話が重かった。"""
+    ③率直な謝罪と言い直しの返事（GPT・文脈込み）。従来は Issue 提案に逃げて会話が重かった。
+
+    ★事実照合ゲート（2026-07-23 戸田「結果的に嘘をつかれている。再発防止をしたい」）:
+    指摘を鵜呑みに記録を書き換えない。実バグ=GO実行で対象スレッドへ投稿済みなのに、戸田さんの
+    「実際に投稿されていないよね？」という誤った前提に同調し、正しい完了報告へ取り消し注記を入れ
+    「投稿はしておらず」と虚偽の訂正を出した。以後、取り消しの前にシステム記録（裁定台帳等の
+    行動事実）と照合し、指摘が記録と矛盾する場合は何も書き換えず記録を根拠に丁寧に訂正する。
+    判定不能（LLM不通等）も書き換えない側に倒す＝正しい記録の改竄は誤りの放置より重い。"""
     thread = source.read_thread(ch, root)
     self_tag = f"<@{runtime.CHIAKI_SELF}>"
     posts = [x for x in thread if x.get("user_id") == runtime.CHIAKI_SELF
              and not (x.get("text") or "").lstrip().startswith(self_tag)]
     target = posts[-1] if posts else None
+    facts = convo.thread_facts(ch, root)
+    facts_txt = "\n".join(f"- {f}" for f in facts) or "- （記録なし）"
+    mistake, ans = None, ""
+    try:
+        from lib import llm
+        convo_txt = "\n".join(f"- {(x.get('user_name') or x.get('user_id') or '?')}: {(x.get('text') or '')[:200]}"
+                              for x in thread[-10:])
+        out = llm.gpt(
+            "あなたは Chiaki AI。あなたの直前のアクション（修正依頼・完了報告など）が誤りだったと"
+            "指摘されました。まず、指摘がシステム記録（正本＝実際の行動の事実）と矛盾しないか照合します。\n"
+            f"システム記録（正本）:\n{facts_txt}\n"
+            f"スレッドのやりとり:\n{convo_txt}\n"
+            f"指摘: {m.get('text') or ''}\n\n"
+            'JSON のみで返す: {"mistake": true|false, "reply": "..."}\n'
+            "- mistake=true（記録と照らしても本当に誤りだった）: reply で1〜3文で率直に謝り、"
+            "何が正しかったのかを言い直す。\n"
+            "- mistake=false（指摘の前提が記録と矛盾＝例: 記録に投稿済みのリンクがあるのに"
+            "「投稿されていない」と言われた）: 謝罪や取り消しはせず、reply で相手の前提に同調せずに"
+            "記録を根拠として事実を丁寧に伝える（記録にリンクがあれば含める）。\n"
+            "reply は です・ます調・感嘆符は全角！・@メンションや太字は書かない・言い訳をしない。",
+            max_tokens=400) or ""
+        d = json.loads(re.search(r"\{.*\}", out, re.S).group(0))
+        mistake = bool(d.get("mistake"))
+        ans = (d.get("reply") or "").strip()
+    except Exception:
+        pass
+    if mistake is None:
+        # 判定不能＝記録は一切書き換えず、正直に確認を返す（次の返事で改めて処理される）
+        _reply(ch, root, "すみません、どの投稿がどう誤っていたのか、記録と照合しきれませんでした。"
+                         "取り消しはいったん保留するので、誤っている投稿を教えてもらえますか？")
+        return 1
+    if not mistake:
+        _reply(ch, root, ans or "記録の上では、該当の対応は実行済みになっています。"
+                                "どの投稿が誤りだったか教えてもらえますか？")
+        print(f"[intake] retract指摘は記録と矛盾＝取り消しせず事実を提示 ch={ch} root={root}")
+        return 1
     if target:
         source.update_message(ch, target["ts"],
                               (target.get("text") or "") + "\n\n※この投稿は誤りでした。取り消します。")
@@ -1165,19 +1208,6 @@ def _handle_retract(m: dict, ch: str, root: str) -> int:
                 closed += 1
         if closed:
             runtime.save_json("pending_approvals.json", pend)
-    ans = ""
-    try:
-        from lib import llm
-        convo = "\n".join(f"- {(x.get('user_name') or x.get('user_id') or '?')}: {(x.get('text') or '')[:200]}"
-                          for x in thread[-10:])
-        ans = (llm.gpt(
-            "あなたは Chiaki AI。あなたの直前のアクション（修正依頼など）が誤りだったと指摘されました。\n"
-            f"スレッドのやりとり:\n{convo}\n指摘: {m.get('text') or ''}\n"
-            "1〜3文で率直に謝り、何が正しかったのかを言い直す（です・ます調・感嘆符は全角！・"
-            "@メンションや太字は書かない・言い訳をしない）。テキストのみを返す。",
-            max_tokens=250) or "").strip()
-    except Exception:
-        pass
     _reply(ch, root, ans or "失礼しました！さきほどの投稿は誤りだったので取り消しました。")
     return 1
 

@@ -159,8 +159,25 @@ def thread_facts(ch: str, root: str) -> list[str]:
                          f"対象={tgt}さんの投稿。")
             if it.get("final_text"):
                 facts.append(f"あなたが対象スレッドへ出した依頼文:「{it['final_text'][:150]}」")
-            if it.get("status") == "completed":
-                facts.append(f"あなたは完了通知を出し済み（修正した人={tgt}さん）。")
+            # 投稿の実在は時刻・リンク付きで明示する（2026-07-23 実バグ: 投稿済みなのに戸田さんの
+            # 「投稿されていないよね？」に同調し、正しい完了報告を取り消して虚偽の訂正を出した）
+            st, nudge = it.get("status"), it.get("nudge_ts")
+            src_ch, src_ts = it.get("source_channel") or "", it.get("source_ts") or ""
+            if nudge and src_ch:
+                when = dt.datetime.fromtimestamp(float(nudge), dt.timezone(dt.timedelta(hours=9))
+                                                 ).strftime("%m-%d %H:%M")
+                link = (f"https://lipple.slack.com/archives/{src_ch}/p{nudge.replace('.', '')}"
+                        f"?thread_ts={src_ts}&cid={src_ch}")
+                facts.append(f"あなたは{when}に対象スレッドへ修正依頼を実際に投稿済み（{link}）。"
+                             "「投稿していない」という前提は事実に反する＝同調せず、このリンクを添えて訂正する。")
+                if st == "retracted":
+                    facts.append("その後この投稿は誤りとして取り消し注記済み。")
+            elif st == "pending":
+                facts.append("対象スレッドへはまだ何も投稿していない（裁定待ち）。")
+            elif st in ("reject", "gone", "already_fixed", "unactionable"):
+                facts.append(f"この提案は{st}でクローズ済み＝対象スレッドへの投稿はしていない。")
+            if st == "completed":
+                facts.append(f"あなたは対象投稿の修正を確認し、完了通知を出し済み（修正した人={tgt}さん）。")
         for k, v in pend.items():
             if v.get("source_ts") == root and v is not it:
                 facts.append(f"このスレッドの投稿への裁定（提案{k}）: 状態={v.get('status')}・"
@@ -255,7 +272,9 @@ def decide(ch: str, root: str, m: dict, mode: str, extra_facts: list[str] | None
         "対応できると正直に案内する。\n"
         "「さっきの件」「昨日の話」のような指示語は、長期記憶と別スレッドのやりとりも踏まえて解釈する。\n\n"
         f"# あなたの長期記憶（これまでの決定・戸田さんの好み・注意点）\n{_notes_text(mem)}\n\n"
-        f"# このスレッドでのあなたの状態・行動（事実。これと矛盾する返答をしない）\n{facts_txt}\n\n"
+        "# このスレッドでのあなたの状態・行動（システム記録＝事実。これと矛盾する返答をしない。"
+        "相手の発言がこの記録と食い違うときは、同調せず記録を根拠に丁寧に訂正する。"
+        f"自分が「した／していない」は必ずこの記録だけを根拠に答える）\n{facts_txt}\n\n"
         f"# 直近の別スレッドでのやりとり（新しい順）\n{_cross_thread_text(mem, root)}\n\n"
         f"# スレッドのやりとり（古い順）\n{build_convo(ch, root)}\n\n"
         f"# 最近の修正報告（あなた自身の不具合と直した内容の記録・新しい順）\n{fix_reports()}\n\n"
