@@ -247,14 +247,19 @@ def _process_threads() -> None:
                     mts = new[-1].get("ts") or str(now)
                     link = (f"https://lipple.slack.com/archives/{tch}/p{mts.replace('.', '')}"
                             f"?thread_ts={tts}&cid={tch}")
-                    intake_reg = runtime.load_json("chiaki_intake.json", {"items": {}})
-                    intake_reg.setdefault("items", {})[mts] = {
-                        "status": "awaiting_confirm", "channel": tch, "thread_root": tts,
-                        "proposals": bills, "propose_count": 1, "permalink": link,
-                        "last_seen_ts": mts, "mention_ts": mts,
-                        "mention_text": text[:300], "proposed_at": runtime.now_ts()}
-                    runtime.save_json("chiaki_intake.json", intake_reg)
+                    # 先に確認質問を出す（2026-07-23 監査レビュー: 旧順序=保存→投稿失敗だと、次回実行の
+                    # 「intake確認ターン進行中」ガードが自分の保存したawaiting_confirmに反応し、
+                    # 質問が二度と出ないまま7日間このスレッドを塞いでいた）
                     _reply(tts, reply, ch=tch)
+                    # 挿入はロック下で読み直す＝intakeの丸ごと上書きに消されない（lost update防止）
+                    with runtime.intake_lock():
+                        intake_reg = runtime.load_json("chiaki_intake.json", {"items": {}})
+                        intake_reg.setdefault("items", {})[mts] = {
+                            "status": "awaiting_confirm", "channel": tch, "thread_root": tts,
+                            "proposals": bills, "propose_count": 1, "permalink": link,
+                            "last_seen_ts": mts, "mention_ts": mts,
+                            "mention_text": text[:300], "proposed_at": runtime.now_ts()}
+                        runtime.save_json("chiaki_intake.json", intake_reg)
                     _done("replied")
                     print(f"[codex-runner] thread {tts} -> propose (intake確認ターンへ引き継ぎ)")
                 elif reply:

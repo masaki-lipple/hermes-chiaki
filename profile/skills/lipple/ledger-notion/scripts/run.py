@@ -13,9 +13,10 @@ from lib import convo, ledger, notion, runtime, source  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
 ST_JP = {"handled": "処理済み", "ruled": "裁定済み", "ok": "実行成功", "failed": "失敗",
-         "deferred": "保留", "skipped": "スキップ", "received": "受信", "queued": "キュー投入"}
+         "deferred": "保留", "skipped": "スキップ", "received": "受信", "queued": "キュー投入",
+         "ruling": "実行中"}  # R3⑤の消費開始クレーム（2026-07-23 レビュー: 未登録で生英語が出ていた）
 OWN_JP = {"intake": "窓口", "apply": "裁定", "codex": "Codex"}
-PRI = ["ruled", "handled", "ok", "failed", "deferred", "queued", "skipped", "received"]
+PRI = ["ruled", "handled", "ok", "failed", "ruling", "deferred", "queued", "skipped", "received"]
 UPDATE_WINDOW_SEC = 14 * 86400  # これより古い依頼は不変扱い（更新チェックしない）
 
 
@@ -58,7 +59,8 @@ def summarize(events: list) -> dict:
     elif ch and root:
         link = f"https://lipple.slack.com/archives/{ch}/p{root.replace('.', '')}"
     note = " / ".join(sorted({r.get("note") for r in es
-                              if r.get("note") and r.get("note") != "already_replied"}))
+                              if r.get("note") and r.get("note") != "already_replied"
+                              and not r.get("note", "").startswith("消費開始クレーム")}))
     if refs.get("approval"):
         ap = refs["approval"]
         note = (note + " / " if note else "") + f"承認digest={ap.get('digest')}({ap.get('verdict')})"

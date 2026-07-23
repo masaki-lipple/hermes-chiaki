@@ -187,12 +187,17 @@ def main():
         # 受信・起動の事実を実行台帳へ（再設計R1→R2ではこれが処理の一次ソース）。
         # text も保存＝intake が台帳行から候補を作れる（処理時は Slack の現物を読み直す＝権威は Slack）。
         # self-health が毎朝「受けたのに処理痕跡が無い」黙殺を検知する突き合わせ元でもある。
-        ledger.record(ledger.event_id(ch, ev.get("ts") or ""), source="listener",
-                      actor=user or "", ch=ch, thread_root=tts or "", ts=ev.get("ts") or "",
-                      text=(ev.get("text") or "")[:2000],
-                      kind={"apply": "ruling", "codex": "codex"}.get(action, "intake"),
-                      owner={"apply": "apply", "codex": "codex"}.get(action, "intake"),
-                      status="received")
+        # 既に台帳に行がある発話（cronが先に処理・Slackの遅延再配送）は received で上書きしない
+        # （2026-07-23 監査レビュー: cron先行のruled/消費開始クレームを後着のreceivedが後勝ちで消し、
+        # R3冪等の根拠が退行し得た。台帳は同idの新しい行が勝つマージのため書かないのが正）
+        eid = ledger.event_id(ch, ev.get("ts") or "")
+        if not ledger.entry(eid).get("status"):
+            ledger.record(eid, source="listener",
+                          actor=user or "", ch=ch, thread_root=tts or "", ts=ev.get("ts") or "",
+                          text=(ev.get("text") or "")[:2000],
+                          kind={"apply": "ruling", "codex": "codex"}.get(action, "intake"),
+                          owner={"apply": "apply", "codex": "codex"}.get(action, "intake"),
+                          status="received")
         try:
             if action == "apply":
                 print(f"[listener] ruling event ch={ch} thread={tts} -> apply-ruling", flush=True)

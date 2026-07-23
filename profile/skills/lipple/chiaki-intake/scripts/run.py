@@ -1259,12 +1259,25 @@ def _progress_watch(ch: str, root: str, m: dict):
     return done.set
 
 
+def _save_items(intake: dict) -> None:
+    """chiaki_intake.json の保存＝ロック下でディスク版と合流してから書く（2026-07-23 監査レビュー
+    確定バグ: intakeがLLM待ちの間にcodex-runnerのpropose引き継ぎが挿入したawaiting_confirmを、
+    古いメモリコピーの丸ごと上書きが消していた＝確認ターンのlost update・承認の無音消失）。
+    自分が触ったキーは自分の版を優先し、自分が知らないキー（並行挿入）は取り込む。"""
+    with runtime.intake_lock():
+        disk = runtime.load_json("chiaki_intake.json", {"items": {}}).get("items", {})
+        mem = intake.setdefault("items", {})
+        for k, v in disk.items():
+            mem.setdefault(k, v)
+        runtime.save_json("chiaki_intake.json", intake)
+
+
 def main():
     cur = runtime.load_json("tuning_cursor.json", {})
     intake = runtime.load_json("chiaki_intake.json", {"items": {}})
     items = intake.setdefault("items", {})
     _expire_stale(items)
-    runtime.save_json("chiaki_intake.json", intake)  # 失効を即保存＝直後の走査例外で失効通知が二重投稿されない
+    _save_items(intake)  # 失効を即保存＝直後の走査例外で失効通知が二重投稿されない
     # R2: 主経路＝実行台帳（listenerが受信時に登録）。フルスキャンはリコンサイルに降格
     # （listener停止・イベント欠落・台帳導入前の残りを5分毎に補完）。
     cand = _ledger_candidates(items)
@@ -1277,7 +1290,7 @@ def main():
         cur["__scan__"] = now0
         runtime.save_json("tuning_cursor.json", cur)
     if not cand:
-        runtime.save_json("chiaki_intake.json", intake)  # 失効状態は保存
+        _save_items(intake)  # 失効状態は保存
         print("[intake] nothing new")
         return
     seen, uniq = set(), []
@@ -1293,6 +1306,15 @@ def main():
     # カーソルを止めない＝後続の処理済み発話の再発見も起きない（監査②b）。
     maxts, failed, acted = {}, set(), 0
     for m, root, ch, _hint in uniq:
+        if _hint != "escalate" and ledger.entry(ledger.event_id(ch, m["ts"])).get("status") in (
+                "handled", "skipped"):
+            # 台帳で終端済みの発話は再処理しない（2026-07-23 監査レビュー: 台帳経路で処理済みの発話を
+            # リコンサイル走査が再発見し、GPT不通時の_confirm_legacy等でconvo台帳に載らなかった
+            # 「OK」が初回分類へ再投入され得た）。走査カーソルと既読位置だけ前進して素通り
+            if (ch, m["ts"]) in scan_keys:
+                maxts[ch] = m["ts_float"]
+            _advance_item_seen(items, ch, root, m["ts"])
+            continue
         if _hint != "escalate" and convo.already_replied(ch, m["ts"]):
             # 既に別経路（codex-runnerの対話等）がこの発話に返答済み＝二重発話しない（最終ガード・2026-07-13）。
             # 台帳の終端状態（handled等）をskippedで上書きしない（監査②: 正常応答済みがskipped×Nに見えていた）
@@ -1340,9 +1362,24 @@ def main():
             if (ch, m["ts"]) in scan_keys:
                 maxts[ch] = m["ts_float"]  # 失敗でも走査カーソルは進める＝再試行は台帳経路(failed)が担う
             print(f"[intake] error ch={ch} ts={m['ts']}: {e}")
-            prior = ledger.entry(ledger.event_id(ch, m["ts"])).get("status")
+            prior_row = ledger.entry(ledger.event_id(ch, m["ts"]))
+            prior = prior_row.get("status")
+            tries = int(prior_row.get("tries") or 0) + 1
+            if tries >= 12:
+                # 恒久故障の打ち切り（2026-07-23 監査レビュー: 失敗のたびに台帳のatが更新され7日窓を
+                # 永遠に出ない＝上限なしの再試行ループになっていた）。正直に1回だけ知らせて終端
+                ledger.record(ledger.event_id(ch, m["ts"]), ch=ch, thread_root=root, ts=m["ts"],
+                              kind="intake", owner="intake", status="skipped", tries=tries,
+                              note=f"再試行上限で打ち切り: {type(e).__name__}"[:120])
+                if m.get("user_id") == runtime.TODA:
+                    try:
+                        _reply(ch, root, "何度か再試行しましたが、この依頼の処理を完了できませんでした。"
+                                         "お手数ですが、時間をおいてもう一度メンションしてもらえますか？")
+                    except Exception:
+                        pass
+                continue
             ledger.record(ledger.event_id(ch, m["ts"]), ch=ch, thread_root=root, ts=m["ts"],
-                          kind="intake", owner="intake", status="failed",
+                          kind="intake", owner="intake", status="failed", tries=tries,
                           note=f"{type(e).__name__}: {e}"[:120])
             # 全LLM同時不通（GPT不調+Anthropic 529等）でも黙らない＝初回失敗時だけ決定論の固定文で
             # 状況を伝える（2026-07-16 15:15 実バグ: 両LLM死亡で例外→無言、戸田さん「とまっている」）。
@@ -1353,7 +1390,7 @@ def main():
                                      "自動で再試行するので、復旧し次第このスレッドに改めて返信します！")
                 except Exception:
                     pass
-    runtime.save_json("chiaki_intake.json", intake)
+    _save_items(intake)
     for ch, mx in maxts.items():
         cur[ch] = max(float(cur.get(ch, 0.0)), mx)
     runtime.save_json("tuning_cursor.json", cur)

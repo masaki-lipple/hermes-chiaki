@@ -77,6 +77,26 @@ def save_json(name: str, data) -> None:
 
 
 APPROVALS_LOCK = "/tmp/chiaki_apply.lock"  # 裁定台帳の書き手全員が共有（apply-rulingのcron/listenerと同一）
+INTAKE_ITEMS_LOCK = "/tmp/chiaki_intake_items.lock"  # chiaki_intake.json の書き手（intake/codex-runner）が共有
+
+
+def intake_lock():
+    """chiaki_intake.json の読み書き排他（2026-07-23 監査レビュー確定バグ: intakeがLLM待ちの間に
+    codex-runnerのpropose引き継ぎが挿入したawaiting_confirmを、intakeの古いコピーの丸ごと上書きが
+    消していた＝確認ターンのlost update・承認済みIssueの無音消失）。書き手はこのロック下で
+    読み直し→マージ→保存する。"""
+    import fcntl
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _lock():
+        with open(INTAKE_ITEMS_LOCK, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    return _lock()
 
 
 def approvals_lock():
