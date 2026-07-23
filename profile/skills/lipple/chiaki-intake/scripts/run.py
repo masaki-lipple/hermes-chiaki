@@ -533,8 +533,13 @@ def _ledger_candidates(items: dict):
     now = runtime.now_ts()
     pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
     for eid, r in ledger.load().items():
-        if r.get("owner") != "intake" or (r.get("status") or "received") != "received":
+        # failedも拾う＝再試行は台帳経路が担う（2026-07-21 監査②b: 従来はカーソル停止で
+        # 走査に再試行させていたため、後続の処理済み発話まで毎回再発見しskippedを量産していた）
+        st = r.get("status") or "received"
+        if r.get("owner") != "intake" or st not in ("received", "failed"):
             continue
+        if st == "failed" and now - float(r.get("at") or 0) < 600:
+            continue  # 失敗の再試行は10分間隔（恒久故障の発話へ2分毎にLLMを浪費しない）
         if not (now - _LEDGER_WINDOW_SEC < float(r.get("at") or 0)):
             continue
         ch, ts = r.get("ch") or "", r.get("ts") or ""
@@ -577,6 +582,16 @@ def _is_bare_ruling(text: str) -> bool:
         return False
     tokens = [x for x in re.split(r"[、。！!\?？\s　]+", t) if x]
     return bool(tokens) and all(tok.lower() in _RULING_WORDS for tok in tokens)
+
+
+def _advance_item_seen(items: dict, ch: str, root: str, msg_ts: str) -> None:
+    """awaiting/filed の直接走査の既読位置（last_seen_ts）を進める。処理済み・スキップ済みの
+    発話を直接走査が最長24時間再発見し続けるループの防止（2026-07-21 監査②a: skipped×5量産の型）。"""
+    for it in items.values():
+        if (it.get("channel") == ch and it.get("thread_root") == root
+                and it.get("status") in ("awaiting_confirm", "filed")
+                and float(msg_ts) > float(it.get("last_seen_ts") or 0)):
+            it["last_seen_ts"] = msg_ts
 
 
 def _find_awaiting(items: dict, ch: str, root: str, msg_ts: str):
@@ -1224,8 +1239,11 @@ def main():
     # （listener停止・イベント欠落・台帳導入前の残りを5分毎に補完）。
     cand = _ledger_candidates(items)
     now0 = runtime.now_ts()
+    scan_keys: set = set()  # リコンサイル走査由来の候補＝カーソルを進めてよいのはこれだけ
     if now0 - float(cur.get("__scan__") or 0) > _RECONCILE_SEC:
-        cand += _candidates(cur, items)
+        scan_cand = _candidates(cur, items)
+        scan_keys = {(c[2], c[0]["ts"]) for c in scan_cand}
+        cand += scan_cand
         cur["__scan__"] = now0
         runtime.save_json("tuning_cursor.json", cur)
     if not cand:
@@ -1239,15 +1257,22 @@ def main():
             continue
         seen.add(key)
         uniq.append(c)
-    # uniq は ts 昇順。失敗が出たチャンネルはそれ以降カーソルを進めない＝失敗メッセージを取りこぼさず次回再処理する。
+    # カーソル（tuning_cursor）は「走査がここまで見た」の印＝リコンサイル由来の候補だけが進める。
+    # 台帳経路の処理で進めると、listener欠落中の発話がカーソルの向こうに取り残され恒久黙殺になる
+    # （2026-07-21 監査①=R2固有の退行の根治）。失敗発話は台帳経路（received/failed）が再試行するため
+    # カーソルを止めない＝後続の処理済み発話の再発見も起きない（監査②b）。
     maxts, failed, acted = {}, set(), 0
     for m, root, ch, _hint in uniq:
         if _hint != "escalate" and convo.already_replied(ch, m["ts"]):
-            # 既に別経路（codex-runnerの対話等）がこの発話に返答済み＝二重発話しない（最終ガード・2026-07-13）
-            ledger.record(ledger.event_id(ch, m["ts"]), actor=m.get("user_id") or "", ch=ch,
-                          thread_root=root, ts=m["ts"], kind="intake", owner="intake",
-                          status="skipped", note="already_replied")
-            if ch not in failed:
+            # 既に別経路（codex-runnerの対話等）がこの発話に返答済み＝二重発話しない（最終ガード・2026-07-13）。
+            # 台帳の終端状態（handled等）をskippedで上書きしない（監査②: 正常応答済みがskipped×Nに見えていた）
+            prior = ledger.entry(ledger.event_id(ch, m["ts"])).get("status")
+            if prior in (None, "received", "failed"):
+                ledger.record(ledger.event_id(ch, m["ts"]), actor=m.get("user_id") or "", ch=ch,
+                              thread_root=root, ts=m["ts"], kind="intake", owner="intake",
+                              status="skipped", note="already_replied")
+            _advance_item_seen(items, ch, root, m["ts"])
+            if (ch, m["ts"]) in scan_keys:
                 maxts[ch] = m["ts_float"]
             continue
         try:  # モデル表記（GPT 5.4等）の取り違え防止＝メッセージごとに使用記録をリセット
@@ -1273,14 +1298,17 @@ def main():
                         acted += _handle_propose(m, ch, root, items)
                 finally:
                     cancel()
-            if ch not in failed:
-                maxts[ch] = m["ts_float"]  # 連続成功プレフィックスの高水位だけ前進
+            if (ch, m["ts"]) in scan_keys:
+                maxts[ch] = m["ts_float"]  # 走査由来のみ前進（台帳経路はカーソルを動かさない・監査①）
+            _advance_item_seen(items, ch, root, m["ts"])
             ledger.record(ledger.event_id(ch, m["ts"]), actor=m.get("user_id") or "", ch=ch,
                           thread_root=root, ts=m["ts"],
                           kind="escalate" if _hint == "escalate" else "intake",
                           owner="intake", status="handled")
         except Exception as e:
             failed.add(ch)
+            if (ch, m["ts"]) in scan_keys:
+                maxts[ch] = m["ts_float"]  # 失敗でも走査カーソルは進める＝再試行は台帳経路(failed)が担う
             print(f"[intake] error ch={ch} ts={m['ts']}: {e}")
             prior = ledger.entry(ledger.event_id(ch, m["ts"])).get("status")
             ledger.record(ledger.event_id(ch, m["ts"]), ch=ch, thread_root=root, ts=m["ts"],
@@ -1288,7 +1316,7 @@ def main():
                           note=f"{type(e).__name__}: {e}"[:120])
             # 全LLM同時不通（GPT不調+Anthropic 529等）でも黙らない＝初回失敗時だけ決定論の固定文で
             # 状況を伝える（2026-07-16 15:15 実バグ: 両LLM死亡で例外→無言、戸田さん「とまっている」）。
-            # 再試行はカーソル未前進の走査が続けるので、復旧すれば本応答が改めて届く。
+            # 再試行は台帳経路（status=failed・10分間隔）が続けるので、復旧すれば本応答が改めて届く。
             if prior != "failed" and m.get("user_id") == runtime.TODA:
                 try:
                     _reply(ch, root, "すみません、いま応答システム全体が不調で返答を作れませんでした。"

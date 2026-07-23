@@ -168,22 +168,38 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
     toda = [m for m in replies if m.get("user_id") == runtime.TODA and m.get("ts") != tts]
     if not toda:
         return 0
-    # R3冪等: この裁定発話が台帳上ruled済みなら再実行しない（状態ファイルの巻き戻り・競合・
-    # 再走査でも同じGOを二度実行しない＝承認は発話単位で一度だけ消費される）
-    if ledger.entry(ledger.event_id(runtime.CH_CHIAKI_MGMT,
-                                    toda[-1].get("ts") or "")).get("status") == "ruled":
-        return 0
-    ruling_text = toda[-1].get("text", "")
-    core_text = ruling_text
-    if f"<@{runtime.CHIAKI_SELF}>" in ruling_text:
-        # @メンション付きの返信は原則 intake（会話コア）の領分＝二重処理しない（2026-07-14 レビュー確定バグ:
-        # 「@Chiaki AI この文面短くして」に intake の会話と apply の interpret 実行が別々に反応していた）。
-        # 例外＝メンションを除いた本文が裸の裁定語（GO/却下/質問等）の場合だけ従来どおりここで扱う。
-        core_text = re.sub(r"<@U[A-Z0-9]+>", "", ruling_text)
-        if _classify(core_text)[0] == "interpret":
+    # 裁定発話の選定＝最新1件に限定しない（2026-07-21 監査⑥b: 「GO→（処理前に）ありがとう」の連投で
+    # 最新がすり替わるとGOが永遠に読まれず、非承認発話がinterpret実行され承認の束縛先もズレる）。
+    # 新しい順に裸の裁定語（GO/却下）を探し、無ければ従来どおり最新の返信で判定する。
+    ruling_msg, verdict, payload = None, None, None
+    for mm in reversed(toda):
+        v0, p0 = _classify(re.sub(r"<@U[A-Z0-9]+>", "", mm.get("text", "")))
+        if v0 in ("go", "reject"):
+            ruling_msg, verdict, payload = mm, v0, p0
+            break
+    if ruling_msg is None:
+        ruling_msg = toda[-1]
+        ruling_text0 = ruling_msg.get("text", "")
+        core_text = ruling_text0
+        if f"<@{runtime.CHIAKI_SELF}>" in ruling_text0:
+            # @メンション付きの返信は原則 intake（会話コア）の領分＝二重処理しない（2026-07-14 レビュー確定バグ:
+            # 「@Chiaki AI この文面短くして」に intake の会話と apply の interpret 実行が別々に反応していた）。
+            core_text = re.sub(r"<@U[A-Z0-9]+>", "", ruling_text0)
+            if _classify(core_text)[0] == "interpret":
+                return 0
+        verdict, payload = _classify(core_text)
+        if verdict == "skip":
             return 0
-    verdict, payload = _classify(core_text)
-    if verdict == "skip":
+    ruling_text = ruling_msg.get("text", "")
+    ruling_ts = ruling_msg.get("ts") or ""
+    eid = ledger.event_id(runtime.CH_CHIAKI_MGMT, ruling_ts)
+    led = ledger.entry(eid)
+    # R3冪等: ruled済みは再実行しない。ruling（消費開始クレーム）が新鮮な間も待つ＝
+    # 対象スレッド投稿→保存の間のクラッシュで毎分同じGOが再実行される窓を閉じる
+    # （2026-07-21 監査⑤・クレームは10分で失効＝クラッシュ時も最終的には再試行される）
+    if led.get("status") == "ruled":
+        return 0
+    if led.get("status") == "ruling" and runtime.now_ts() - float(led.get("at") or 0) < 600:
         return 0
 
     src_ch, src_ts = it.get("source_channel"), it.get("source_ts")
@@ -218,9 +234,8 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
                        "ruled_at": runtime.now_ts(), "verdict": it.get("status")}
             it["approval"] = binding
             _save(pend)
-            ledger.record(ledger.event_id(runtime.CH_CHIAKI_MGMT, toda[-1].get("ts") or ""),
-                          actor=runtime.TODA, ch=runtime.CH_CHIAKI_MGMT, thread_root=tts,
-                          ts=toda[-1].get("ts") or "", kind="ruling", owner="apply",
+            ledger.record(eid, actor=runtime.TODA, ch=runtime.CH_CHIAKI_MGMT, thread_root=tts,
+                          ts=ruling_ts, kind="ruling", owner="apply",
                           status="ruled", refs={"item_status": it.get("status"), "approval": binding})
             runtime.append_jsonl("rulings.jsonl", {
                 "ts": runtime.now_ts(), "thread_ts": tts, "verdict": it["status"],
@@ -235,16 +250,24 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
             if not final:
                 print(f"[apply-ruling] {tts}: interpret failed -> leave pending")
                 return 0
+        # 消費開始クレーム＝対象スレッドへの投稿より先に印を打つ（2026-07-21 監査⑤: 投稿→保存の間の
+        # クラッシュで毎分同じGOが再実行され二重投稿になる窓の封鎖。二重送信より未送信検知側に倒す）
+        ledger.record(eid, actor=runtime.TODA, ch=runtime.CH_CHIAKI_MGMT, thread_root=tts,
+                      ts=ruling_ts, kind="ruling", owner="apply", status="ruling",
+                      note="消費開始クレーム（10分で失効）")
         posted = source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{final}")
         nudge_ts = posted.get("ts") if isinstance(posted, dict) else None
-        if not nudge_ts:  # 投稿失敗(ok:false/network/dry)＝松永さんへ届いていない → 状態を進めず pending のまま再試行
-            print(f"[apply-ruling] {tts}: nudge post returned no ts -> leave pending, retry next run")
+        if not nudge_ts:  # 投稿失敗(ok:false/network/dry)＝松永さんへ届いていない → pendingのまま（クレーム失効後に再試行）
+            print(f"[apply-ruling] {tts}: nudge post returned no ts -> leave pending, retry after claim expiry")
             return 0
         link = _permalink(src_ch, nudge_ts, src_ts)
         if verdict == "interpret" and final.strip() != draft.strip():
-            runtime.append_jsonl("style_corrections.jsonl", {
-                "ts": runtime.now_ts(), "kind": it.get("finding_kind", ""),
-                "original": draft, "corrected": final})
+            try:  # 学習ログの書き込み失敗で投稿後の状態保存を巻き込まない（監査⑤: 毎分再投稿ループの芽）
+                runtime.append_jsonl("style_corrections.jsonl", {
+                    "ts": runtime.now_ts(), "kind": it.get("finding_kind", ""),
+                    "original": draft, "corrected": final})
+            except Exception as e:
+                print(f"[apply-ruling] style_corrections書き込み失敗（続行）: {e}")
             report = "ご指示を反映して投稿しました。学習に取り込みます。"
         else:
             report = "GO 了解です。対象スレッドへ投稿しました。"
@@ -263,9 +286,8 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
                "ruled_at": runtime.now_ts(), "verdict": verdict}
     it["approval"] = binding
     _save(pend)  # 投稿直後に永続化＝この後の例外でも再投稿しない
-    ledger.record(ledger.event_id(runtime.CH_CHIAKI_MGMT, toda[-1].get("ts") or ""),
-                  actor=runtime.TODA, ch=runtime.CH_CHIAKI_MGMT, thread_root=tts,
-                  ts=toda[-1].get("ts") or "", kind="ruling", owner="apply", status="ruled",
+    ledger.record(eid, actor=runtime.TODA, ch=runtime.CH_CHIAKI_MGMT, thread_root=tts,
+                  ts=ruling_ts, kind="ruling", owner="apply", status="ruled",
                   refs={"verdict": verdict, "item_status": it.get("status"), "approval": binding})
     runtime.append_jsonl("rulings.jsonl", {
         "ts": runtime.now_ts(), "thread_ts": tts, "verdict": verdict,
@@ -294,6 +316,18 @@ def _phase_completion(pend: dict) -> int:
     return acted
 
 
+def _ledger_close_thread(src_ch: str, src_ts: str, note: str) -> None:
+    """対象スレッドの apply 所有の received 行を終端する（2026-07-21 監査③: 完了追跡系が台帳を
+    終端せず、傍観者の発話等が恒久 received で残り、Notion控えにも未処理に見えていた）。"""
+    try:
+        for eid, r in ledger.load().items():
+            if (r.get("owner") == "apply" and (r.get("status") or "received") == "received"
+                    and r.get("ch") == src_ch and r.get("thread_root") == src_ts):
+                ledger.record(eid, status="skipped", note=note)
+    except Exception:
+        pass
+
+
 def _complete_one(pend: dict, tts: str, it: dict) -> int:
     src_ch, src_ts = it.get("source_channel"), it.get("source_ts")
     tgt, nudge_ts = it.get("target_user_id") or "", it.get("nudge_ts") or "0"
@@ -312,6 +346,7 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
             source.post_thread_reply(
                 runtime.CH_CHIAKI_MGMT, tts,
                 f"<@{runtime.CHIAKI_SELF}>\n対象の投稿が削除されたようなので、この依頼をクローズします。")
+            _ledger_close_thread(src_ch, src_ts, "対象削除（gone）に伴い終端")
             return 1
         _save(pend)
         return 0
@@ -354,6 +389,11 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
         runtime.append_jsonl("rulings.jsonl", {
             "ts": runtime.now_ts(), "thread_ts": tts, "verdict": "completed",
             "kind": it.get("finding_kind", ""), "completion_ts": done_ts})
+        # 台帳の終端（監査③）: 完了報告の行を handled にし、スレッドの残り（傍観者の発話等）も掃除
+        ledger.record(ledger.event_id(src_ch, done_ts), ch=src_ch, thread_root=src_ts,
+                      ts=done_ts, kind="ruling", owner="apply", status="handled",
+                      note="完了検知＝お礼と完了通知を送信")
+        _ledger_close_thread(src_ch, src_ts, "修正依頼の完了に伴い終端")
         return 1
     if report and fixed is False:
         # 報告は来たが まだ直っていない → 同じ報告には1回だけ指摘（spam防止）
@@ -361,6 +401,9 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
             source.post_thread_reply(src_ch, src_ts, f"<@{tgt}>\n{_recheck_text()}")
             it["last_checked_report_ts"] = report["ts"]
             _save(pend)
+            ledger.record(ledger.event_id(src_ch, report["ts"]), ch=src_ch, thread_root=src_ts,
+                          ts=report["ts"], kind="ruling", owner="apply", status="handled",
+                          note="報告を確認＝未修正のため再確認を依頼")
             return 1
         return 0
     # 未報告かつ未修正 → 時間ベースの再リマインド（営業時間外は出さない＝listener が24/7でも安全）
@@ -383,6 +426,7 @@ def _complete_one(pend: dict, tts: str, it: dict) -> int:
         source.post_thread_reply(
             runtime.CH_CHIAKI_MGMT, tts,
             f"<@{runtime.TODA}>\n促しを{MAX_REMINDS}回送っても反応がないため、いったん見送り扱い（stale）にします。\n{link}")
+        _ledger_close_thread(src_ch, src_ts, "stale終端に伴い終端")
         return 1
     return 0
 

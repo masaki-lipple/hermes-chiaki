@@ -150,6 +150,23 @@ def _swallowed(st: dict, now: float) -> list[str]:
     return warns
 
 
+def _apply_stale(now: float) -> list[str]:
+    """裁定系（apply）の監査（2026-07-21 監査③: 従来はowner=applyを一律監査除外＝完了追跡が
+    本当に故障しても検知できなかった）。完了追跡が動くべきスレッド（awaiting_completion）の
+    受信行が3日以上終端されていなければ警告する。傍観者の発話等は完了時の掃除で終端される。"""
+    from lib import ledger
+    pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
+    tracking = {v.get("source_ts") for v in pend.values()
+                if v.get("status") == "awaiting_completion"}
+    warns = []
+    for eid, r in ledger.load().items():
+        if (r.get("owner") == "apply" and (r.get("status") or "received") == "received"
+                and now - float(r.get("at") or 0) > 72 * 3600
+                and r.get("thread_root") in tracking):
+            warns.append(f"完了追跡が3日以上反応していない可能性: ch={r.get('ch')} ts={r.get('ts')}")
+    return warns
+
+
 def main() -> None:
     now = runtime.now_ts()
     st = runtime.load_json(STATE, {})
@@ -159,6 +176,7 @@ def main() -> None:
     warns += _log_missing(st, now)
     warns += _ledger_stale(now)
     warns += _swallowed(st, now)
+    warns += _apply_stale(now)
     runtime.save_json(STATE, st)
     if not warns:
         print("[self-health] ok")

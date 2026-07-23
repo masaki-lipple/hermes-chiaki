@@ -188,6 +188,10 @@ def _process_threads() -> None:
             # 既に別経路（intake等）がこの発話に返答済み＝二重発話しない（2026-07-13 16:48/16:50 二重の再発防止）
             t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
             changed = True
+            _eid = ledger.event_id(tch, new[-1].get("ts") or "")
+            if ledger.entry(_eid).get("status") in (None, "received"):  # 台帳も終端（恒久received防止）
+                ledger.record(_eid, ch=tch, thread_root=tts, ts=new[-1].get("ts") or "",
+                              kind="codex", owner="codex", status="skipped", note="already_replied")
             print(f"[codex-runner] thread {tts} -> already replied elsewhere")
             continue
         try:
@@ -215,74 +219,102 @@ def _process_threads() -> None:
             # 返事の無い応答で既読化しない＝質問の無音黙殺防止（次回リトライ）
             print(f"[codex-runner] empty reply {tts} -> retry next run")
             continue
-        t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
-        changed = True
-        runtime.save_json("codex_threads.json", reg)  # 既読位置を即保存＝後続スレッドの例外で巻き戻さない
-        ledger.record(ledger.event_id(tch, new[-1].get("ts") or ""), actor=runtime.TODA, ch=tch,
-                      thread_root=tts, ts=new[-1].get("ts") or "", kind="codex", owner="codex",
-                      status="queued" if act.get("action") in ("continue",) else "replied")
-        if cd:
-            convo.commit()  # Phase C: 会話コアの判断を採用＝会話台帳へ
         action = act.get("action")
         reply = (act.get("reply") or "").strip()
-        if action == "propose":
-            # 進行中ブランチと別の新しい改善案＝「Issueとして処理しますか？」の確認を出し、
-            # 以降の返事は intake の確認ターンへ引き継ぐ（listener は確認ターン優先ルーティング済み。
-            # 2026-07-21 戸田「テストや何かを改善しようとしたら、イシューとして処理しますか？ってきいてほしい」）
-            bills = [p for p in (act.get("proposals") or [])
-                     if isinstance(p, dict) and p.get("type") in ("issue", "rule")
-                     and (p.get("要約") or "").strip()]
-            if bills and reply:
-                mts = new[-1].get("ts") or str(now)
-                link = (f"https://lipple.slack.com/archives/{tch}/p{mts.replace('.', '')}"
-                        f"?thread_ts={tts}&cid={tch}")
-                intake_reg = runtime.load_json("chiaki_intake.json", {"items": {}})
-                intake_reg.setdefault("items", {})[mts] = {
-                    "status": "awaiting_confirm", "channel": tch, "thread_root": tts,
-                    "proposals": bills, "propose_count": 1, "permalink": link,
-                    "last_seen_ts": mts, "mention_ts": mts,
-                    "mention_text": text[:300], "proposed_at": runtime.now_ts()}
-                runtime.save_json("chiaki_intake.json", intake_reg)
-                _reply(tts, reply, ch=tch)
-                print(f"[codex-runner] thread {tts} -> propose (intake確認ターンへ引き継ぎ)")
-            elif reply:
-                _reply(tts, reply, ch=tch)
-                print(f"[codex-runner] thread {tts} -> propose(案なし)=返事のみ")
+
+        def _done(status: str) -> None:
+            # 処理が成立してから既読化・台帳記録・会話台帳へ（2026-07-21 監査④の根治:
+            # 先書きだと返信投稿の失敗が「偽の処理済み」になり、返答が失われても再試行も検知もされない）
+            nonlocal changed
+            t["last_seen_ts"] = float(new[-1].get("ts_float") or now)
+            changed = True
+            runtime.save_json("codex_threads.json", reg)
+            ledger.record(ledger.event_id(tch, new[-1].get("ts") or ""), actor=runtime.TODA,
+                          ch=tch, thread_root=tts, ts=new[-1].get("ts") or "", kind="codex",
+                          owner="codex", status=status)
+            if cd:
+                convo.commit()  # Phase C: 会話コアの判断を採用＝会話台帳へ
+
+        try:
+            if action == "propose":
+                # 進行中ブランチと別の新しい改善案＝「Issueとして処理しますか？」の確認を出し、
+                # 以降の返事は intake の確認ターンへ引き継ぐ（listener は確認ターン優先ルーティング済み。
+                # 2026-07-21 戸田「テストや何かを改善しようとしたら、イシューとして処理しますか？ってきいてほしい」）
+                bills = [p for p in (act.get("proposals") or [])
+                         if isinstance(p, dict) and p.get("type") in ("issue", "rule")
+                         and (p.get("要約") or "").strip()]
+                if bills and reply:
+                    mts = new[-1].get("ts") or str(now)
+                    link = (f"https://lipple.slack.com/archives/{tch}/p{mts.replace('.', '')}"
+                            f"?thread_ts={tts}&cid={tch}")
+                    intake_reg = runtime.load_json("chiaki_intake.json", {"items": {}})
+                    intake_reg.setdefault("items", {})[mts] = {
+                        "status": "awaiting_confirm", "channel": tch, "thread_root": tts,
+                        "proposals": bills, "propose_count": 1, "permalink": link,
+                        "last_seen_ts": mts, "mention_ts": mts,
+                        "mention_text": text[:300], "proposed_at": runtime.now_ts()}
+                    runtime.save_json("chiaki_intake.json", intake_reg)
+                    _reply(tts, reply, ch=tch)
+                    _done("replied")
+                    print(f"[codex-runner] thread {tts} -> propose (intake確認ターンへ引き継ぎ)")
+                elif reply:
+                    _reply(tts, reply, ch=tch)
+                    _done("replied")
+                    print(f"[codex-runner] thread {tts} -> propose(案なし)=返事のみ")
+                else:
+                    _done("skipped")  # 案も返事も無い＝静観として既読化（無限リトライ防止）
+                continue
+            if action == "retract":
+                _reply(tts, reply or "失礼しました！さきほどの投稿は誤りでした。", ch=tch)
+                _done("replied")
+                print(f"[codex-runner] thread {tts} -> retract")
+                continue
+            if action == "company_rule":
+                c = act.get("company") or {}
+                url = notion.create_company_regulation(
+                    rule=c.get("rule") or "", content=c.get("content") or "",
+                    category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "")
+                # 本体の副作用（DB登録）が済んだ時点で既読化＝返信失敗の再試行で二重登録しない
+                _done("replied")
+                try:
+                    _reply(tts, (reply + ("\n" + url if url else "")) if url else
+                           (reply + "（ローカル確認のため実際の保存はしていません）" if not notion._token() else
+                            "社内レギュレーション_DBへの登録に失敗しました。共有・権限を確認してもらえますか？"),
+                           ch=tch)
+                except Exception as e:
+                    print(f"[codex-runner] company_rule返信失敗（登録済み・続行）: {e}")
+                print(f"[codex-runner] thread {tts} -> company_rule")
+                continue
+            if action == "continue":
+                # 内容行には「今回の指示」を出す（元の件名のままだと報告が実作業とズレて見える）
+                runtime.append_jsonl("codex_queue.jsonl", {
+                    "ts": now, "requested_by": runtime.TODA,
+                    "summary": f"継続：{(act.get('instruction') or text)[:60]}",
+                    "detail": act.get("instruction") or text,
+                    "issue_url": t.get("issue_url") or "",
+                    "continue_branch": t.get("branch") or "", "thread": tts, "channel": tch})
+                # 本体の副作用（キュー投入）が済んだ時点で既読化＝返信失敗の再試行で二重投入しない
+                _done("queued")
+                try:
+                    _reply(tts, reply or "追加の指示を受け取りました！Codexに続きを任せます。", ch=tch)
+                except Exception as e:
+                    print(f"[codex-runner] continue返信失敗（キュー投入済み・続行）: {e}")
+                print(f"[codex-runner] thread {tts} -> continue queued")
+            elif action == "deploy":
+                t["deploy_requested"] = True
+                _reply(tts, "本番への反映はClaude Codeのレビューを通してから行う約束にしています。"
+                            "レビュー依頼として記録したので、確認でき次第反映します！", ch=tch)
+                _done("replied")
+                print(f"[codex-runner] thread {tts} -> deploy requested")
+            else:  # question / chat
+                if reply:
+                    _reply(tts, reply, ch=tch)
+                _done("replied")
+                print(f"[codex-runner] thread {tts} -> {action}")
+        except Exception as e:
+            # 投稿等の失敗＝既読化しない（last_seen据え置き）→次回リトライ。黙殺・偽処理済みを作らない
+            print(f"[codex-runner] thread {tts} action={action} 失敗（次回再試行）: {type(e).__name__}: {e}")
             continue
-        if action == "retract":
-            _reply(tts, reply or "失礼しました！さきほどの投稿は誤りでした。", ch=tch)
-            print(f"[codex-runner] thread {tts} -> retract")
-            continue
-        if action == "company_rule":
-            c = act.get("company") or {}
-            url = notion.create_company_regulation(
-                rule=c.get("rule") or "", content=c.get("content") or "",
-                category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "")
-            _reply(tts, (reply + ("\n" + url if url else "")) if url else
-                   (reply + "（ローカル確認のため実際の保存はしていません）" if not notion._token() else
-                    "社内レギュレーション_DBへの登録に失敗しました。共有・権限を確認してもらえますか？"),
-                   ch=tch)
-            print(f"[codex-runner] thread {tts} -> company_rule")
-            continue
-        if action == "continue":
-            # 内容行には「今回の指示」を出す（元の件名のままだと報告が実作業とズレて見える）
-            runtime.append_jsonl("codex_queue.jsonl", {
-                "ts": now, "requested_by": runtime.TODA,
-                "summary": f"継続：{(act.get('instruction') or text)[:60]}",
-                "detail": act.get("instruction") or text,
-                "issue_url": t.get("issue_url") or "",
-                "continue_branch": t.get("branch") or "", "thread": tts, "channel": tch})
-            _reply(tts, reply or "追加の指示を受け取りました！Codexに続きを任せます。", ch=tch)
-            print(f"[codex-runner] thread {tts} -> continue queued")
-        elif action == "deploy":
-            t["deploy_requested"] = True
-            _reply(tts, "本番への反映はClaude Codeのレビューを通してから行う約束にしています。"
-                        "レビュー依頼として記録したので、確認でき次第反映します！", ch=tch)
-            print(f"[codex-runner] thread {tts} -> deploy requested")
-        else:  # question / chat
-            if reply:
-                _reply(tts, reply, ch=tch)
-            print(f"[codex-runner] thread {tts} -> {action}")
     if changed:
         runtime.save_json("codex_threads.json", reg)
 
