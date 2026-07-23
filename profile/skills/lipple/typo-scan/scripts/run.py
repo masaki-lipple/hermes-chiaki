@@ -31,9 +31,10 @@ def _rules():
     return {"terms": [], "acronyms": [], "style_rules": []}
 
 
-def _known(rules):
+def _known(rules, learned=()):
     out = [t.get("official") for t in rules.get("terms", []) if t.get("official")]
     out += list(rules.get("acronyms", []))
+    out += sorted(learned)  # 却下学習済みの検知語＝「正しい語」としてHaikuに渡す（2026-07-23 戸田）
     return [x for x in out if x][:60]
 
 
@@ -92,7 +93,9 @@ def _detect(messages, known):
 def main():
     bots = {runtime.GCP_TASK_BOT, runtime.CHIAKI_SELF}
     rules = _rules()
-    known = _known(rules)
+    # 過去に却下された検知語（reject_learn.jsonl）＝同じ指摘を繰り返さない（2026-07-23 戸田）
+    learned = {r.get("found") for r in runtime.read_jsonl("reject_learn.jsonl") if r.get("found")}
+    known = _known(rules, learned)
     cur = runtime.load_json("typo_cursor.json", {})
     total = 0
     channels = [c["id"] for c in source.list_bot_channels()
@@ -119,6 +122,8 @@ def main():
                 # 誤判定されて催促直後に偽の完了お礼・完了通知まで連鎖する）。
                 if found not in msg["text"]:
                     continue
+                if found in learned:
+                    continue  # 却下学習済み＝決定論でも除外（Haikuがknownを無視した場合の保険）
                 # 辞書層(notation_check)と重複する found はスキップ（二重提案防止）
                 if any(iss.get("found") == found for iss in observe.notation_check(msg["text"], rules)):
                     continue

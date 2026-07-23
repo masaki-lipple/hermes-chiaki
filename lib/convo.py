@@ -177,7 +177,7 @@ def thread_facts(ch: str, root: str) -> list[str]:
                     facts.append("その後この投稿は誤りとして取り消し注記済み。")
             elif st == "pending":
                 facts.append("対象スレッドへはまだ何も投稿していない（裁定待ち）。")
-            elif st in ("reject", "gone", "already_fixed", "unactionable"):
+            elif st in ("reject", "gone", "already_fixed", "unactionable", "expired"):
                 facts.append(f"この提案は{st}でクローズ済み＝対象スレッドへの投稿はしていない。")
             if st == "completed":
                 facts.append(f"あなたは対象投稿の修正を確認し、完了通知を出し済み（修正した人={tgt}さん）。")

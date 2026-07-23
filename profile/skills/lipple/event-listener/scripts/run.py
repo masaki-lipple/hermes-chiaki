@@ -167,7 +167,8 @@ def main():
             # メンション付きでも裸の裁定語（GO/OK/却下等）は apply-ruling の領分。intake側は
             # _is_bare_ruling でスキップするため、ここで intake へ回すとイベント到着順次第で
             # 裁定が翌営業朝の cron まで黙殺される（2026-07-14 レビュー確定バグ＝非決定の握りつぶし）
-            if _is_relevant(ch, tts) and _gi.get("_is_bare_ruling", lambda t: False)(ev.get("text") or ""):
+            if _is_relevant(ch, tts) and _gi.get(
+                    "_is_ruling_message", _gi.get("_is_bare_ruling", lambda t: False))(ev.get("text") or ""):
                 action = "apply"
             else:
                 action = "intake"

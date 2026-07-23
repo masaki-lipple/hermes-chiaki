@@ -138,6 +138,13 @@ def _draft(f: dict, rules: dict) -> str:
         return base
 
 
+def _reject_learned() -> set:
+    """過去に戸田さんが却下した検知語（reject_learn.jsonl・apply-rulingが記録）。同じ指摘を
+    繰り返さない（2026-07-23 戸田「次回指摘しないようにする仕組みをつくる」・実例=人名を誤字提案
+    →「却下。これは本当の人物名。」→5日後に再提案しかけた）。"""
+    return {r.get("found") for r in runtime.read_jsonl("reject_learn.jsonl") if r.get("found")}
+
+
 def main():
     if not runtime.is_jp_workday():
         print("[SILENT] holiday/weekend")  # 祝日に戸田さんへ提案pingしない（cronは曜日しか知らない）
@@ -147,6 +154,7 @@ def main():
         print("[propose] no findings")
         return
     rules = _rules()
+    learned = _reject_learned()
     new_items = {}  # 裁定台帳への追加分（保存はロック下で読み直してマージ＝R3・競合消去の根治）
     posted = 0
     for f in findings:
@@ -161,6 +169,9 @@ def main():
         link = _permalink(f.get("channel", ""), f.get("msg_ts", ""))
         found = iss.get("found", f.get("task", ""))
         suggest = iss.get("suggest", "")
+        if found and found in learned:
+            f["status"] = "rejected_learned"  # 却下学習済みの検知語＝再提案しない（2026-07-23 戸田）
+            continue
         pc = _context_precheck(f, found, suggest)
         if pc and pc.get("drop"):
             f["status"] = "rejected_context"  # 文脈精査で棄却（bot投稿・誤検知）＝提案しない
@@ -198,7 +209,8 @@ def main():
             posted += 1
         else:
             print(f"[propose] post failed, leave status=new: kind={f['kind']} ch={f.get('channel')}")
-    changed = posted or any(f.get("status") in ("noted", "rejected_context") for f in findings)
+    changed = posted or any(f.get("status") in ("noted", "rejected_context", "rejected_learned")
+                            for f in findings)
     if posted:
         # pending を先に＝提案がGO不能になる黒穴を作らない。ロック下で読み直してマージ＝
         # 実行中に apply-ruling / intake(retract) が変えた状態遷移を全書き戻しで消さない（R3）

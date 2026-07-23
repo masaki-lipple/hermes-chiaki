@@ -555,9 +555,10 @@ def _ledger_candidates(items: dict):
             ledger.record(eid, status="skipped", note="発話が削除済み")
             continue
         text = m.get("text") or ""
-        # 裁定スレッド内の防御（listener判定の二重ガード）: メンション無し・裸裁定語はapplyの領分
+        # 裁定スレッド内の防御（listener判定の二重ガード）: メンション無し・裁定発話（裸のGO/却下・
+        # 理由付き却下）はapplyの領分
         if root in pend and ch == runtime.CH_CHIAKI_MGMT and (
-                MENTION not in text or _is_bare_ruling(text)):
+                MENTION not in text or _is_ruling_message(text)):
             ledger.record(eid, status="skipped", note="apply領分")
             continue
         if m.get("user_id") != runtime.TODA:
@@ -582,6 +583,17 @@ def _is_bare_ruling(text: str) -> bool:
         return False
     tokens = [x for x in re.split(r"[、。！!\?？\s　]+", t) if x]
     return bool(tokens) and all(tok.lower() in _RULING_WORDS for tok in tokens)
+
+
+_REJECT_LEAD_RE = re.compile(r"^(?:却下|見送り|ボツ|ぼつ|NG|ng|やめ)[。、．.！!\s　]+\S")
+
+
+def _is_ruling_message(text: str) -> bool:
+    """apply-ruling が処理する発話か＝裸の裁定語 または 理由付き却下（「却下。これは本当の人物名。」）。
+    2026-07-23 戸田「（却下+理由は）次回指摘しないようにする仕組みをつくる」＝applyが却下として裁定し
+    理由を学習する。従来は会話扱いで item が pending のまま残っていた（7/20実例=5日間放置）。"""
+    t = re.sub(r"<@U[A-Z0-9]+>", "", text or "").strip()
+    return _is_bare_ruling(text) or bool(_REJECT_LEAD_RE.match(t))
 
 
 def _advance_item_seen(items: dict, ch: str, root: str, msg_ts: str) -> None:
@@ -1307,7 +1319,7 @@ def main():
     maxts, failed, acted = {}, set(), 0
     for m, root, ch, _hint in uniq:
         if _hint != "escalate" and ledger.entry(ledger.event_id(ch, m["ts"])).get("status") in (
-                "handled", "skipped"):
+                "handled", "skipped", "ruled"):
             # 台帳で終端済みの発話は再処理しない（2026-07-23 監査レビュー: 台帳経路で処理済みの発話を
             # リコンサイル走査が再発見し、GPT不通時の_confirm_legacy等でconvo台帳に載らなかった
             # 「OK」が初回分類へ再投入され得た）。走査カーソルと既読位置だけ前進して素通り
