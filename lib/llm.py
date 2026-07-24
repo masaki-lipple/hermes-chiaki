@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -35,6 +36,37 @@ def last_used() -> str:
 
 def _mark(model_label: str) -> None:
     _last_used.model = model_label
+
+
+def _caller() -> str:
+    """呼び出し元スキル名（R5コスト計測・2026-07-24）。スタックから skills/lipple/<name>/ を探す＝
+    cron launcher 経由・listener のスレッド内実行・lib 経由（convo.decide 等）のどれでも特定できる。"""
+    try:
+        import inspect
+        for fr in inspect.stack()[2:]:
+            parts = Path(fr.filename).parts
+            if "skills" in parts:
+                i = parts.index("skills")
+                if len(parts) > i + 2:
+                    return parts[i + 2] if parts[i + 1] == "lipple" else parts[i + 1]
+        import sys
+        return Path(sys.argv[0]).stem or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _track(fn: str, model: str, t0: float, ok: bool, n_in: int, n_out: int, note: str = "") -> None:
+    """LLM呼び出しの計測（R5コスト計測＝Issue「4. R5 コスト計測」・2026-07-24 戸田GO）。
+    llm_usage.jsonl に1呼び出し1行。集計・可視化は skills/lipple/llm-usage。
+    計測の失敗で本処理（文面生成・判断）は絶対に止めない。"""
+    try:
+        from lib import runtime
+        runtime.append_jsonl("llm_usage.jsonl", {
+            "ts": runtime.now_ts(), "caller": _caller(), "fn": fn, "model": model, "ok": ok,
+            "ms": int((time.time() - t0) * 1000), "in": n_in, "out": n_out,
+            **({"note": note} if note else {})})
+    except Exception:
+        pass
 
 # chiaki のトンマナ（SOUL のトンマナ規約に対応。戸田さんの調整時はここと SOUL を更新）
 CHIAKI_TONE = (
@@ -99,17 +131,29 @@ def _call(model: str, user: str, system: str, max_tokens: int, timeout: int = 30
 
 def haiku(user: str, system: str | None = None, max_tokens: int = 150) -> str:
     """短い文面生成（既定 system＝CHIAKI_TONE＋焼いたスタイル）。判断は呼ばない。"""
-    out = _call(MODEL_HAIKU, user, system if system is not None else _chiaki_system(), max_tokens)
+    sys_prompt = system if system is not None else _chiaki_system()
+    t0 = time.time()
+    try:
+        out = _call(MODEL_HAIKU, user, sys_prompt, max_tokens)
+    except Exception as e:
+        _track("haiku", "Haiku 4.5", t0, False, len(user) + len(sys_prompt), 0, type(e).__name__)
+        raise
     _mark("Haiku 4.5")
+    _track("haiku", "Haiku 4.5", t0, True, len(user) + len(sys_prompt), len(out))
     return out
 
 
 def opus(user: str, system: str = "", max_tokens: int = 1024) -> str:
     """判断系（同期時のレギュレーション分類など低頻度）。強モデルで信頼性重視。"""
-    out = _call(MODEL_OPUS, user,
-                system or "あなたは正確な日本語校正・分類アシスタントです。指示に厳密に従う。",
-                max_tokens, timeout=90)
+    sys_prompt = system or "あなたは正確な日本語校正・分類アシスタントです。指示に厳密に従う。"
+    t0 = time.time()
+    try:
+        out = _call(MODEL_OPUS, user, sys_prompt, max_tokens, timeout=90)
+    except Exception as e:
+        _track("opus", "Opus 4.8", t0, False, len(user) + len(sys_prompt), 0, type(e).__name__)
+        raise
     _mark("Opus 4.8")
+    _track("opus", "Opus 4.8", t0, True, len(user) + len(sys_prompt), len(out))
     return out
 
 
@@ -152,15 +196,20 @@ def gpt(user: str, system: str | None = None, max_tokens: int = 450, timeout: in
     """中枢（会話・振り分け）用。ChatGPT サブスク経由の GPT-5.4 を叩き、失敗時は Haiku へ自動フォールバック
     （高額側でなく安価側への退避＝コスト方針と整合）＋日1回 #8902 に控え。呼び側の扱いは haiku() と同じ。"""
     sys_prompt = system if system is not None else _chiaki_system()
+    t0 = time.time()
     try:
         out = _gpt_raw(user, sys_prompt, timeout)
         if out:
             _mark(GPT_LABEL)
+            _track("gpt", GPT_LABEL, t0, True, len(user) + len(sys_prompt), len(out))
             return out
         raise RuntimeError("gpt empty response")
     except Exception as e:
         print(f"[llm] gpt failed -> haiku fallback: {type(e).__name__}: {e}")
+        _track("gpt", GPT_LABEL, t0, False, len(user) + len(sys_prompt), 0, type(e).__name__)
         _note_gpt_fallback(str(e))
+        t1 = time.time()
         out = _call(MODEL_HAIKU, user, sys_prompt, max_tokens)
         _mark("Haiku 4.5・代替")  # GPT不通の退避＝表記で見分けられるように
+        _track("haiku", "Haiku 4.5", t1, True, len(user) + len(sys_prompt), len(out), "代替")
         return out
