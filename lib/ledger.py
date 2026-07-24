@@ -9,6 +9,9 @@ R2でここが所有権判定（誰の領分か）の正本になる。
 """
 from __future__ import annotations
 
+import json
+import os
+
 from lib import runtime
 
 FILE = "exec_ledger.jsonl"
@@ -49,3 +52,46 @@ def load() -> dict:
 
 def entry(eid: str) -> dict:
     return load().get(eid, {})
+
+
+def compact(keep_sec: float = 14 * 86400) -> int:
+    """台帳の折り畳み（2026-07-24 Issue「10. 運用の磨き」＝追記型で肥大化するため月次相当で圧縮）。
+    マージ後の最終更新（at）が keep_sec より古い id は「マージ済み1行」に畳み、新しい id の行は
+    生のまま残す（イベントの粒度を保つ）。書き換え中に並走プロセスが追記した末尾行は読み直して
+    再追記＝取りこぼさない（O_APPENDの1行書き前提）。戻り値=削れた行数。"""
+    p = runtime.STATE_DIR / FILE
+    if not p.exists():
+        return 0
+    size0 = p.stat().st_size
+    rows = runtime.read_jsonl(FILE)
+    now = runtime.now_ts()
+    merged: dict = {}
+    order: list = []
+    for row in rows:
+        eid = row.get("id")
+        if not eid:
+            continue
+        if eid not in merged:
+            merged[eid] = {"id": eid}
+            order.append(eid)
+        merged[eid].update({k: v for k, v in row.items() if k != "id"})
+    out, kept_ids = [], set()
+    for eid in order:
+        if now - float(merged[eid].get("at") or 0) > keep_sec:
+            out.append(json.dumps(merged[eid], ensure_ascii=False))
+        else:
+            kept_ids.add(eid)
+    for row in rows:
+        if row.get("id") in kept_ids:
+            out.append(json.dumps(row, ensure_ascii=False))
+    tmp = str(p) + ".compact"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + ("\n" if out else ""))
+    with open(p, "rb") as f:  # 書き換え中の追記を回収
+        f.seek(size0)
+        tail = f.read().decode("utf-8", "replace")
+    if tail.strip():
+        with open(tmp, "a", encoding="utf-8") as f:
+            f.write(tail if tail.endswith("\n") else tail + "\n")
+    os.replace(tmp, p)
+    return max(0, len(rows) - len(out))

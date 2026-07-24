@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -167,6 +168,28 @@ def _apply_stale(now: float) -> list[str]:
     return warns
 
 
+_RULING_WORDS = {"go", "ok", "おk", "おけ", "ゴー", "承認", "了解", "りょうかい", "よし", "いいね",
+                 "却下", "ng", "見送り", "ボツ", "やめ"}
+
+
+def _ruling_swallowed(now: float) -> list[str]:
+    """裁定発話（GO/却下等）が受信のまま処理されていない検知（2026-07-24 Issue「10. 運用の磨き」＝
+    監査レビューの残死角）。2日自動失効の導入で、GOの黙殺が無警告のまま失効へ流れ得るため、
+    apply所有のreceived行のうち本文が裁定語だけのものは30分で警告する。"""
+    from lib import ledger
+    warns = []
+    for eid, r in ledger.load().items():
+        if r.get("owner") != "apply" or (r.get("status") or "received") != "received":
+            continue
+        age = now - float(r.get("at") or 0)
+        if not 1800 < age < 3 * 86400:
+            continue  # 30分以内=処理中の可能性。3日超=失効・掃除済みの残骸でノイズ
+        t = re.sub(r"<@U[A-Z0-9]+>", "", r.get("text") or "").strip(" 　。、！!.?？\n\r\t").lower()
+        if t and t in _RULING_WORDS:
+            warns.append(f"裁定発話「{t}」が30分以上処理されていない: ch={r.get('ch')} ts={r.get('ts')}")
+    return warns
+
+
 def main() -> None:
     now = runtime.now_ts()
     st = runtime.load_json(STATE, {})
@@ -177,6 +200,7 @@ def main() -> None:
     warns += _ledger_stale(now)
     warns += _swallowed(st, now)
     warns += _apply_stale(now)
+    warns += _ruling_swallowed(now)
     runtime.save_json(STATE, st)
     if not warns:
         print("[self-health] ok")

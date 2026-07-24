@@ -253,6 +253,15 @@ def thread_facts(ch: str, root: str) -> list[str]:
                          "（コード修正はClaude Codeが代行する運用）。")
     except Exception:
         pass
+    try:
+        # 却下学習の可視化（2026-07-24 Issue「10. 運用の磨き」）＝「何を学習してる？」に事実で答える
+        rl = [r for r in runtime.read_jsonl("reject_learn.jsonl") if r.get("found")]
+        if rl:
+            recent = "、".join(f"「{r['found']}」" for r in rl[-8:])
+            facts.append(f"却下学習済みの検知語（誤検知として再指摘しない・新しい順最大8件）: {recent}。"
+                         "誤って学習した語を外す作業はClaude Code側＝依頼はIssueとして受ける。")
+    except Exception:
+        pass
     return facts
 
 

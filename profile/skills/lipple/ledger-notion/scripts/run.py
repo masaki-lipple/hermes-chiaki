@@ -156,6 +156,13 @@ def main() -> None:
             if notion.update_page_props(cur["page_id"], _props(eid, s, ch_names, actor_names)):
                 updated += 1
     print(f"[ledger-notion] 追加={created} 更新={updated} 既存={len(existing)}")
+    try:
+        # 台帳の圧縮（2026-07-24 Issue「10. 運用の磨き」）: 行数が閾値を超えたら古いidを折り畳む。
+        # 同期の後＝この日次cron（21:40）は営業時間外で並走追記がほぼ無い時間帯
+        if len(runtime.read_jsonl(ledger.FILE)) > 4000:
+            print(f"[ledger-notion] 台帳コンパクション: {ledger.compact()}行を折り畳み")
+    except Exception as e:
+        print(f"[ledger-notion] compact失敗（続行）: {e}")
 
 
 if __name__ == "__main__":
