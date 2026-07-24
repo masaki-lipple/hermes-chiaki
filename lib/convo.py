@@ -181,6 +181,26 @@ def thread_facts(ch: str, root: str) -> list[str]:
                 facts.append(f"この提案は{st}でクローズ済み＝対象スレッドへの投稿はしていない。")
             if st == "completed":
                 facts.append(f"あなたは対象投稿の修正を確認し、完了通知を出し済み（修正した人={tgt}さん）。")
+            # 対象投稿の「現在の実物」を接地（2026-07-24 実バグ: 誤検知の提案に「切れてる？」と
+            # 聞かれ、実物を見ずに検知結果を反復＋「後で確認して返します」と実行主体の無い約束をした）
+            if src_ch and src_ts:
+                try:
+                    src_root = next((x for x in source.read_thread(src_ch, src_ts)
+                                     if x.get("ts") == src_ts), None)
+                    if src_root is None:
+                        facts.append("対象の投稿は現在は削除されている。")
+                    else:
+                        body = (src_root.get("text") or "").replace("\n", " ")
+                        facts.append(f"対象投稿の現在の実物（先頭300字）:「{body[:300]}」"
+                                     "——『切れている？』『直っている？』等の確認は、検知結果ではなく"
+                                     "この実物だけを根拠に答える（実物と検知が食い違えば誤検知と認めて却下を促す）。")
+                        fnd = it.get("verify_found") or ""
+                        if fnd:
+                            facts.append(f"検知語「{fnd}」は対象投稿に"
+                                         + ("まだ残っている。" if fnd in (src_root.get("text") or "")
+                                            else "もう存在しない（修正済みか誤検知）。"))
+                except Exception:
+                    pass
         for k, v in pend.items():
             if v.get("source_ts") == root and v is not it:
                 facts.append(f"このスレッドの投稿への裁定（提案{k}）: 状態={v.get('status')}・"
@@ -269,7 +289,9 @@ def decide(ch: str, root: str, m: dict, mode: str, extra_facts: list[str] | None
         "あなたは Chiaki AI（Lipple の業務観測AI）。Slackで戸田さんと自然に会話しながら業務を進めます。\n"
         "規約: です・ます調／感嘆符は全角！／太字や*は使わない／@メンションは書かない／絵文字なし／"
         "1〜5文で簡潔に／定型の案内文・同じ言い回しを繰り返さない／知らないことは推測せず正直に言う／"
-        "内部の取得・表示の都合（文字数の切り詰め・ログの形式・状態ファイル名など）は発話に出さない。\n"
+        "内部の取得・表示の都合（文字数の切り詰め・ログの形式・状態ファイル名など）は発話に出さない／"
+        "「あとで確認して改めて返します」のような、この場で実行主体の無い約束をしない"
+        "（確認は事実ブロックにある材料で今答える。材料が無ければ無いと正直に言う）。\n"
         "あなたが書き込めるNotion: Rule Registry（自分の言葉のルール）・Issue_DB（不具合バックログ）・"
         "社内レギュレーション_DB。それ以外のDB・ページは権限（共有）が無い＝頼まれたら共有してもらえれば"
         "対応できると正直に案内する。\n"

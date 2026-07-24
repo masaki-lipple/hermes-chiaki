@@ -163,13 +163,15 @@ known = gt["_known"]({"terms": [{"official": "Lipple"}], "acronyms": ["PDCA"]}, 
 check("② learned in known terms", "白岩様" in known and "Lipple" in known)
 source.list_bot_channels = lambda: [{"id": "CX", "name": "x"}]
 gt["_gather"] = lambda ch, since, bots: ([{"ts": "1.0", "ts_float": now, "datetime": "d",
-                                           "text": "白岩様とですですの件", "user_id": "U1"}], now)
+                                           "text": "白岩様とですですの以の件", "user_id": "U1"}], now)
 gt["_detect"] = lambda msgs, known: [{"i": 0, "found": "白岩様", "suggest": "白石様"},
-                                     {"i": 0, "found": "ですです", "suggest": "です"}]
+                                     {"i": 0, "found": "ですです", "suggest": "です"},
+                                     {"i": 0, "found": "以", "suggest": "以下"}]
 before = len(runtime.read_jsonl("findings.jsonl"))
 gt["main"]()
 new_finds = runtime.read_jsonl("findings.jsonl")[before:]
 founds = [f["issue"]["found"] for f in new_finds]
 check("② typo-scan skips learned found", "白岩様" not in founds and "ですです" in founds)
+check("② typo-scan skips 1-char found", "以" not in founds)  # 2026-07-24「以」誤検知の再発防止
 
 print(f"\n{ok} checks passed")

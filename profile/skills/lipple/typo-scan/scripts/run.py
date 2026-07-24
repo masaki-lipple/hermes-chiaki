@@ -116,6 +116,11 @@ def main():
                 found, suggest = h.get("found", ""), h.get("suggest", "")
                 if not (0 <= i < len(msgs)) or not found or not suggest or found == suggest:
                     continue
+                if len(found) < 2:
+                    # 1文字の検知はほぼ幻覚＝採用しない（2026-07-24 実バグ:「次回の出勤日は以下です。」
+                    # の「以」を「文末が切れている」と誤検知→誤提案。1文字は本文実在チェックも素通り
+                    # してしまう。1文字漢字の表記は辞書層(notation_check)が仮名ガード付きで担当）
+                    continue
                 msg = msgs[i]
                 # Haiku の found が対象投稿に実在しない＝幻覚 or 行番号取り違え → 捨てる（監査確定 high：
                 # 実在しない検知は #8902 提案が事実と不一致になり、GO 後に「本文に無い＝修正済み」と

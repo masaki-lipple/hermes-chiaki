@@ -60,6 +60,22 @@ runtime.save_json("pending_approvals.json", {"items": {"902.0": {
 facts = "\n".join(convo.thread_facts(MGMT, "902.0"))
 check("① closed without posting fact", "投稿はしていない" in facts)
 
+# 対象投稿の「現在の実物」の接地（2026-07-24 実バグ:「以」誤検知に「切れてる？」と聞かれ、
+# 実物を見ずに検知結果を反復＋実行主体の無い「後で確認します」を約束した）
+source.read_thread = lambda ch, root: [{"ts": root, "user_id": "U09T44VEZM1",
+                                        "text": "次回の出勤日は以下です。\n2026年07月27日（月）09:00-18:00 出勤"}]
+runtime.save_json("pending_approvals.json", {"items": {"903.0": {
+    "finding_kind": "typo", "status": "pending", "source_channel": "CSRC", "source_ts": "5.0",
+    "target_user_id": "U09T44VEZM1", "draft": "x", "verify_found": "以"}}})
+facts = "\n".join(convo.thread_facts(MGMT, "903.0"))
+check("① target live text grounded", "次回の出勤日は以下です" in facts and "実物だけを根拠" in facts)
+check("① found still present noted", "「以」" in facts and "まだ残っている" in facts)
+runtime.save_json("pending_approvals.json", {"items": {"904.0": {
+    "finding_kind": "typo", "status": "pending", "source_channel": "CSRC", "source_ts": "5.0",
+    "target_user_id": "U09T44VEZM1", "draft": "x", "verify_found": "ですです"}}})
+facts = "\n".join(convo.thread_facts(MGMT, "904.0"))
+check("① found gone noted", "もう存在しない" in facts)
+
 # ── ② _handle_retract: 事実照合ゲート ──
 R = f"{REPO}/profile/skills/lipple/chiaki-intake/scripts/run.py"
 g = {"__file__": R, "__name__": "intake_mod"}
