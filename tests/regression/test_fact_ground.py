@@ -76,6 +76,18 @@ runtime.save_json("pending_approvals.json", {"items": {"904.0": {
 facts = "\n".join(convo.thread_facts(MGMT, "904.0"))
 check("① found gone noted", "もう存在しない" in facts)
 
+# ── 週次レビュー#1・#4の再発防止（2026-07-24） ──
+check("① thread self URL fact", f"archives/{MGMT}/p9040" in facts and "このスレッド自身のURL" in facts)
+runtime.save_json("task_ledger.json", {"tasks": {
+    "CA:1.0": {"task": "コンテンツマーケティング（HR）（2026年07月）", "channel": "CA", "ts": "1.0"},
+    "CB:2.0": {"task": "8月号記事流し込み", "channel": "CB", "ts": "2.0"}}})
+lf = convo._task_link_facts("停滞しているのはコンテンツマーケティング（HR）（2026年07月）です", "URLちょうだい")
+check("① task thread URL grounded", len(lf) == 1 and "archives/CA/p10" in lf[0]
+      and "コンテンツマーケティング" in lf[0])
+check("① no match -> no link fact", convo._task_link_facts("関係ない話") == [])
+check("④ answer must not claim execution",
+      "実行の報告・約束を書かない" in convo.ACTIONS["answer"])
+
 # ── ② _handle_retract: 事実照合ゲート ──
 R = f"{REPO}/profile/skills/lipple/chiaki-intake/scripts/run.py"
 g = {"__file__": R, "__name__": "intake_mod"}

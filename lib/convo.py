@@ -55,7 +55,10 @@ ACTIONS = {
     "retract": "あなたの直前のアクション（修正依頼・通知・リマインド等）が誤り・宛先違い・不要と指摘された。"
                "reply で率直に謝り正しい内容を言い直す（システムが該当投稿に取り消し注記を入れ、関連する裁定を閉じる）。",
     "answer": "回答・雑談・承知＝アクションなしの自然な返事。「なぜ？」は修正報告の記録に基づき「こういうバグでした・"
-              "こう直しました」と答える。記録に無いことは正直に分からないと言う。",
+              "こう直しました」と答える。記録に無いことは正直に分からないと言う。"
+              "answer は何も実行しない＝「登録します」「Codexに回します」「進捗はこのスレッドに返します」の"
+              "ような実行の報告・約束を書かない（起票は propose/file 側の仕事。2026-07-24 週次レビュー: "
+              "answer で起票済みかのような返事をして実際には何も登録されていない虚偽が起きた）。",
     "silent": "応答不要（FYI・独り言など、返事がかえって邪魔な場合）。reply は空。",
 }
 
@@ -149,10 +152,31 @@ def fix_reports(n: int = 6) -> str:
         return "（取得失敗）"
 
 
+def _task_link_facts(*texts: str) -> list[str]:
+    """会話に出てくる観測タスク名のスレッドURLを事実として渡す（2026-07-24 週次レビュー#1:
+    「該当スレッドのURLちょうだい」にチャンネルURLしか出せなかった＝task_ledgerにch/tsが
+    あるのに会話へ未接地だった）。名前の完全部分一致のみ・最大3件＝誤リンクを出さない。"""
+    try:
+        blob = " ".join(texts)
+        out: list[str] = []
+        for t in runtime.load_json("task_ledger.json", {}).get("tasks", {}).values():
+            name = t.get("task") or ""
+            if len(name) >= 4 and name in blob and t.get("channel") and t.get("ts"):
+                url = f"https://lipple.slack.com/archives/{t['channel']}/p{t['ts'].replace('.', '')}"
+                out.append(f"タスク「{name}」のスレッドURL: {url}（URLを聞かれたらこれを出す）")
+            if len(out) >= 3:
+                break
+        return out
+    except Exception:
+        return []
+
+
 def thread_facts(ch: str, root: str) -> list[str]:
     """このスレッドに関する自分の状態・行動の事実（決定論で組み立て＝GPTに推測させない）。
     「自分が何をしたか」を知らないまま辻褄合わせの返答をする問題（松永/松下誤通知の生返事）の根治。"""
     facts: list[str] = []
+    if ch and root:
+        facts.append(f"このスレッド自身のURL: https://lipple.slack.com/archives/{ch}/p{root.replace('.', '')}")
     try:
         pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
         it = pend.get(root)
@@ -290,7 +314,9 @@ def decide(ch: str, root: str, m: dict, mode: str, extra_facts: list[str] | None
     allowed = MODES.get(mode)
     if not allowed:
         return None
-    facts = thread_facts(ch, root) + (extra_facts or [])
+    convo_txt = build_convo(ch, root)
+    facts = (thread_facts(ch, root) + _task_link_facts(convo_txt, m.get("text") or "")
+             + (extra_facts or []))
     facts_txt = "\n".join(f"- {f}" for f in facts) or "- （特になし）"
     actions_txt = "\n".join(f"- {a}: {ACTIONS[a]}" for a in allowed)
     mem = memory()
@@ -310,7 +336,7 @@ def decide(ch: str, root: str, m: dict, mode: str, extra_facts: list[str] | None
         "相手の発言がこの記録と食い違うときは、同調せず記録を根拠に丁寧に訂正する。"
         f"自分が「した／していない」は必ずこの記録だけを根拠に答える）\n{facts_txt}\n\n"
         f"# 直近の別スレッドでのやりとり（新しい順）\n{_cross_thread_text(mem, root)}\n\n"
-        f"# スレッドのやりとり（古い順）\n{build_convo(ch, root)}\n\n"
+        f"# スレッドのやりとり（古い順）\n{convo_txt}\n\n"
         f"# 最近の修正報告（あなた自身の不具合と直した内容の記録・新しい順）\n{fix_reports()}\n\n"
         f"# 新しい発話（戸田さん）\n{(m.get('text') or '')[:600]}\n\n"
         f"# 取れるアクション（この中から1つ）\n{actions_txt}\n\n"
