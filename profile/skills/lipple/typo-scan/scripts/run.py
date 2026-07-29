@@ -66,15 +66,24 @@ def _gather(ch, since, bots):
     return msgs, maxts
 
 
+def _plain(text: str) -> str:
+    """引用行（>・&gt;）を除いた本文＝他者の文章（クライアントのメール引用等）は誤字検知の対象に
+    しない（2026-07-29 戸田指摘: 7/3提案の検知元がクライアント引用文だった）。"""
+    return "\n".join(line for line in (text or "").splitlines()
+                     if not line.lstrip().startswith((">", "&gt;")))
+
+
 def _detect(messages, known):
     """1回の Haiku で複数メッセージの誤字を JSON 抽出。失敗時は []。"""
     try:
         from lib import llm
     except Exception:
         return []
-    numbered = "\n".join(f'[{i}] {m["text"][:200]}' for i, m in enumerate(messages))
+    numbered = "\n".join(f'[{i}] {_plain(m["text"])[:200]}' for i, m in enumerate(messages))
     sysp = ("あなたは日本語ビジネス文の校正者。明確な誤字・誤変換・スペルミス・明らかな助詞の誤りだけを指摘する。"
             "固有名詞・製品名・人名・社内用語・意図的な英字大小・口語やスタイルの好みは指摘しない。"
+            "「文が途中で切れている」「入力途中の文字が残っている」のような切れ・未完の指摘はしない"
+            "（後続の行に続きがあるのを切れと誤判定した実績が複数回ある。存在する文字列の明確な誤りだけを対象にする）。"
             "確信が持てないものは出さない（誤検知を強く避ける）。出力は JSON のみ・前置きなし。")
     user = ("次の各行『[i] 本文』から、明確な誤字だけを抽出してください。"
             f"次は正しい既知用語なので誤字にしない: {', '.join(known)}。"
@@ -125,8 +134,8 @@ def main():
                 # Haiku の found が対象投稿に実在しない＝幻覚 or 行番号取り違え → 捨てる（監査確定 high：
                 # 実在しない検知は #8902 提案が事実と不一致になり、GO 後に「本文に無い＝修正済み」と
                 # 誤判定されて催促直後に偽の完了お礼・完了通知まで連鎖する）。
-                if found not in msg["text"]:
-                    continue
+                if found not in _plain(msg["text"]):
+                    continue  # 引用行にしか無い語も対象外（本文実在チェックと引用除外を兼ねる）
                 if found in learned:
                     continue  # 却下学習済み＝決定論でも除外（Haikuがknownを無視した場合の保険）
                 # 辞書層(notation_check)と重複する found はスキップ（二重提案防止）

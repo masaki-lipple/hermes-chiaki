@@ -311,10 +311,17 @@ def _protect(mask: re.Pattern, text: str, transform):
     return out
 
 
+_QUOTE_LINE = re.compile(r"^[ \t　]*(?:&gt;|>).*$", re.M)
+
+
 def notation_check(text: str, rules: dict) -> list[dict]:
     """高確度の表記候補を抽出。種別ズレ等の判断は上位 LLM に委ねる。"""
     issues = []
     scan = _mask_noncontent(text)  # URL/リンク/コード内の語は表記検査しない（campaign-url-builder の url 等）
+    # 引用ブロック（>行）＝他者の文章（クライアントのメール引用等）は表記指摘の対象にしない
+    # （2026-07-29 戸田「実際に発言した人にコメントをおくる感じになっていなくない？」＝7/3の
+    # 「事→こと」提案の検知元がクライアント引用文で、投稿者に直せと言う筋合いのない指摘だった）
+    scan = _QUOTE_LINE.sub(lambda mm: "\x00" * len(mm.group(0)), scan)
     # 頭字語の casing: 小文字トークンが既知頭字語と一致 → 大文字を提案
     acro = {a.upper() for a in rules.get("acronyms", [])}
     for m in _LATIN_RUN.finditer(scan):
@@ -334,9 +341,12 @@ def notation_check(text: str, rules: dict) -> list[dict]:
         if not (w and w in scan):
             continue
         # 1文字の漢字ルール（事/為/等＝形式名詞・連用）は複合語(記事/行為/均等)に誤マッチしやすい。
-        # 直前が仮名のとき＝形式名詞・連用用法のときだけ拾う（複合語は直前が漢字なので除外）。
+        # 直前が仮名 かつ 直後が漢字でないときだけ拾う（「の事業所」＝直前が仮名でも複合語の頭・
+        # 2026-07-29 戸田指摘の7/3提案で確定した残穴）。
         if len(w) == 1 and _is_kanji(w):
-            if not any(i > 0 and _is_kana(scan[i - 1]) for i, ch in enumerate(scan) if ch == w):
+            if not any(i > 0 and _is_kana(scan[i - 1])
+                       and not (i + 1 < len(scan) and _is_kanji(scan[i + 1]))
+                       for i, ch in enumerate(scan) if ch == w):
                 continue
         issues.append({"kind": "style_rule", "found": w, "suggest": right,
                        "rule": r.get("rule"), "confidence": "high"})
@@ -364,8 +374,10 @@ def apply_notation_fixes(text: str, rules: dict) -> tuple[str, list]:
 
 # ── 日本語ルール3層（regulations.json の決定論レイヤー） ─────────────
 def _kana_preceded(text: str, ch: str) -> bool:
-    """text 中の ch のいずれかの出現が、直前に仮名を持つ（＝形式名詞・連用用法）か。"""
-    return any(i > 0 and _is_kana(text[i - 1]) for i, c in enumerate(text) if c == ch)
+    """text 中の ch のいずれかの出現が、直前に仮名を持ち直後が漢字でない（＝形式名詞・連用用法）か。"""
+    return any(i > 0 and _is_kana(text[i - 1])
+               and not (i + 1 < len(text) and _is_kanji(text[i + 1]))
+               for i, c in enumerate(text) if c == ch)
 
 
 def apply_regulations(text: str, reg: dict, scene: str = "社内コミュニケーション",
