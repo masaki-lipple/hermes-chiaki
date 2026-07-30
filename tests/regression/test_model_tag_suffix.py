@@ -53,6 +53,7 @@ check("intake tag inline", "特定できません。（GPT）" in out and "\n（
 check("intake tag single", out.count("（GPT）") == 1)
 
 posted.clear()
+gi["_effect"]("filed")  # 発話ゲート: 「登録しました」は実効の裏付けが要る（2026-07-29 整合パック11）
 gi["_reply"]("C1", "10.0", "登録しました！（GPT）", "https://app.notion.com/p/abc")
 out = posted[-1][2]
 check("intake tag after trailing url",

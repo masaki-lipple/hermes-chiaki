@@ -94,7 +94,7 @@ g = {"__file__": R, "__name__": "intake_mod"}
 exec(compile(open(R).read(), R, "exec"), g)
 
 edits, replies = [], []
-source.update_message = lambda ch, ts, text: edits.append((ch, ts, text))
+source.update_message = lambda ch, ts, text: edits.append((ch, ts, text)) or {"ok": True}
 g["_reply"] = lambda ch, root, text: replies.append((ch, root, text))
 THREAD = [
     {"ts": "900.0", "user_id": runtime.CHIAKI_SELF, "user_name": "Chiaki AI",

@@ -77,6 +77,41 @@ def display_name(uid: str) -> str:
     return NAMES.get(uid) or source.user_display_name(uid) or "参加者"
 
 
+# ── 発話ゲート（整合パック11・2026-07-29 戸田「A. 発話と実行の整合 これは全部やろう」） ──
+# 実行の主張・約束の文を、当ターンで実際に成立した副作用（effects）と照合し、裏付けの無い文だけを
+# 落とす。プロンプト規約（answerで実行報告を書かない等）を決定論で保証する層。
+# 実例: 2026-07-23 answerが「Issueに登録しCodexに回します。進捗を返します」と虚偽の実行報告をした。
+# effects の語彙: filed(起票URL作成) / queued(codex_queue投入) / edited(chat.update成立) /
+#   retracted(取り消し注記成立) / posted(対象スレッドへ投稿) / company_rule(社内DB登録) /
+#   retry_scheduled(台帳failedによる自動再試行が実在)
+_CLAIM_RULES = [
+    (re.compile(r"(登録|起票)(しました|済み)"), "filed"),
+    (re.compile(r"(Issue|イシュー)[^。！？\n]{0,10}(登録|起票)します"), "filed"),
+    (re.compile(r"Codexに(回します|回しました|任せます|任せました|実装させます)"), "queued"),
+    (re.compile(r"進捗[^。！？\n]{0,10}(スレッド|ここ)[^。！？\n]{0,6}(返します|報告します)"), "queued"),
+    (re.compile(r"(投稿|送信)しました"), "posted"),
+    (re.compile(r"取り消しました"), "retracted"),
+    (re.compile(r"社内レギュレーション[^。！？\n]{0,8}(登録|保存)しました"), "company_rule"),
+    (re.compile(r"(あとで|後で|のちほど|改めて|確認して(から)?)[^。！？\n]{0,14}"
+                r"(返します|返信します|報告します|連絡します|お知らせします)"), "retry_scheduled"),
+]
+
+
+def claims_gate(text: str, effects: set) -> tuple[str, list[str]]:
+    """(残す本文, 落とした文のリスト)。疑問文（？で終わる文＝確認の提案）は対象外。"""
+    kept: list[str] = []
+    dropped: list[str] = []
+    for sent in re.split(r"(?<=[。！!？?\n])", text or ""):
+        s = sent.strip()
+        if not s or s.endswith(("？", "?")):
+            kept.append(sent)
+            continue
+        bad = next((pat.pattern for pat, eff in _CLAIM_RULES
+                    if pat.search(s) and eff not in effects), None)
+        (dropped if bad else kept).append(sent)
+    return "".join(kept).strip(), [d.strip() for d in dropped if d.strip()]
+
+
 # ── Phase C: スレッドを跨ぐ記憶 ─────────────────────────
 MEM_FILE = "convo_memory.json"
 LEDGER_CAP = 120   # 会話台帳の保持件数（リングバッファ）

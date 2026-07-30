@@ -251,13 +251,29 @@ def _blank_before_urls(text: str) -> str:
     return "\n".join(out)
 
 
+def _out_track(kind: str, ch: str, res, thread: str = "", text: str = "") -> None:
+    """出口台帳（整合パック13・2026-07-29 戸田GO）: 自分の全投稿・編集の正本を送信出口で記録する。
+    「結果的に嘘」は全て送信側で起きた＝発話整合の監査・検証の照合基盤。失敗しても本処理は止めない。"""
+    try:
+        from lib import runtime
+        runtime.append_jsonl("out_ledger.jsonl", {
+            "at": runtime.now_ts(), "kind": kind, "ch": ch, "thread": thread,
+            "ts": (res or {}).get("ts") if isinstance(res, dict) else None,
+            "ok": bool(isinstance(res, dict) and (res.get("ts") or res.get("dry"))),
+            "caller": runtime.caller_skill(), "head": (text or "")[:120]})
+    except Exception:
+        pass
+
+
 def post_thread_reply(channel_id: str, thread_ts: str, text: str) -> dict:
     text = _blank_before_urls(_blank_before_bullets(_ensure_mention(channel_id, text)))
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id} thread={thread_ts}\n  {text}")
         return {"ok": True, "dry": True}
-    return _api_post("chat.postMessage",
-                     {"channel": channel_id, "thread_ts": thread_ts, "text": text})
+    res = _api_post("chat.postMessage",
+                    {"channel": channel_id, "thread_ts": thread_ts, "text": text})
+    _out_track("reply", channel_id, res, thread=thread_ts, text=text)
+    return res
 
 
 def post_message(channel_id: str, text: str) -> dict:
@@ -265,7 +281,9 @@ def post_message(channel_id: str, text: str) -> dict:
     if FIXTURES or not _TOKEN:
         print(f"[DRY post] ch={channel_id}\n  {text}")
         return {"ok": True, "dry": True}
-    return _api_post("chat.postMessage", {"channel": channel_id, "text": text})
+    res = _api_post("chat.postMessage", {"channel": channel_id, "text": text})
+    _out_track("post", channel_id, res, text=text)
+    return res
 
 
 def update_message(channel_id: str, ts: str, text: str) -> dict:
@@ -275,4 +293,6 @@ def update_message(channel_id: str, ts: str, text: str) -> dict:
     if FIXTURES or not _TOKEN:
         print(f"[DRY update] ch={channel_id} ts={ts}\n  {text}")
         return {"ok": True, "dry": True}
-    return _api_post("chat.update", {"channel": channel_id, "ts": ts, "text": text, "blocks": []})
+    res = _api_post("chat.update", {"channel": channel_id, "ts": ts, "text": text, "blocks": []})
+    _out_track("update", channel_id, res, thread=ts, text=text)
+    return res

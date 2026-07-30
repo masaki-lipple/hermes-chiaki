@@ -39,18 +39,10 @@ def _mark(model_label: str) -> None:
 
 
 def _caller() -> str:
-    """呼び出し元スキル名（R5コスト計測・2026-07-24）。スタックから skills/lipple/<name>/ を探す＝
-    cron launcher 経由・listener のスレッド内実行・lib 経由（convo.decide 等）のどれでも特定できる。"""
+    """呼び出し元スキル名（R5コスト計測・2026-07-24）。実体は runtime.caller_skill（出口台帳と共用）。"""
     try:
-        import inspect
-        for fr in inspect.stack()[2:]:
-            parts = Path(fr.filename).parts
-            if "skills" in parts:
-                i = parts.index("skills")
-                if len(parts) > i + 2:
-                    return parts[i + 2] if parts[i + 1] == "lipple" else parts[i + 1]
-        import sys
-        return Path(sys.argv[0]).stem or "unknown"
+        from lib import runtime
+        return runtime.caller_skill()
     except Exception:
         return "unknown"
 

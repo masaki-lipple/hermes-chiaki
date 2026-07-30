@@ -217,7 +217,21 @@ def _neutralize_mentions(s: str) -> str:
     return s
 
 
+_TURN_EFFECTS: set = set()  # このメッセージ処理ターンで実際に成立した副作用（発話ゲートの照合先）
+
+
+def _effect(name: str) -> None:
+    _TURN_EFFECTS.add(name)
+
+
 def _reply(ch: str, root: str, body: str, url: str = "") -> None:
+    # 発話ゲート（整合パック11・2026-07-29）: 実行の主張・約束を当ターンの実効と照合し、
+    # 裏付けの無い文は投稿しない（プロンプト規約の決定論での保証）
+    body, dropped = convo.claims_gate(body, _TURN_EFFECTS)
+    if dropped:
+        print(f"[intake] 発話ゲート: 裏付けの無い実行主張を{len(dropped)}文落とした: {dropped[0][:80]}")
+    if not body.strip():
+        body = "すみません、うまく答えをまとめられませんでした。もう一度お願いできますか？"
     b = runtime.ensure_punct(observe.enforce_regulations(_neutralize_mentions(body)))
     if url:
         b += f"\n{url}"
@@ -230,7 +244,10 @@ def _reply(ch: str, root: str, body: str, url: str = "") -> None:
             b = runtime.append_model_tag(b, tag)
     except Exception:
         pass
-    source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{b}")
+    res = source.post_thread_reply(ch, root, f"<@{runtime.TODA}>\n{b}")
+    # 成立確認（整合パック12）: 投稿できていないのに処理済みへ進まない＝呼び側のexceptで再試行に乗る
+    if not (isinstance(res, dict) and (res.get("ts") or res.get("dry"))):
+        raise RuntimeError("reply post failed (no ts)")
 
 
 def _file_issue(p: dict, permalink: str, ch: str):
@@ -239,16 +256,22 @@ def _file_issue(p: dict, permalink: str, ch: str):
     # このプレフィクスと intake_log.jsonl を読み、定型業務に昇格させるか判定して実装する運用）。
     if p.get("routine") and not summary.startswith("定型業務化"):
         summary = f"定型業務化: {summary}"
-    return notion.create_request(summary, p.get("詳細", ""), slack_url=permalink,
-                                 channel_label=_ch_label(ch), kind=p.get("issue_kind") or "その他")
+    url = notion.create_request(summary, p.get("詳細", ""), slack_url=permalink,
+                                channel_label=_ch_label(ch), kind=p.get("issue_kind") or "その他")
+    if url:
+        _effect("filed")  # 発話ゲート: 「登録しました」の裏付け
+    return url
 
 
 def _file_rule(p: dict, permalink: str):
     # 機械ルール（用語/レギュレーション＝決定論で直せる）は即「承認」、スタイル（判断）は「未承認」
     status = "承認" if p.get("rule_kind") in ("用語", "レギュレーション") else "未承認"
-    return notion.create_rule_registry(p.get("要約", ""), p.get("詳細", ""),
-                                       p.get("rule_kind") or "スタイル", slack_url=permalink,
-                                       wrong=p.get("誤例", ""), right=p.get("正例", ""), status=status)
+    url = notion.create_rule_registry(p.get("要約", ""), p.get("詳細", ""),
+                                      p.get("rule_kind") or "スタイル", slack_url=permalink,
+                                      wrong=p.get("誤例", ""), right=p.get("正例", ""), status=status)
+    if url:
+        _effect("filed")
+    return url
 
 
 # ── 既存の再利用ヘルパ（編集・回答・リンク解決） ───────────────
@@ -370,17 +393,30 @@ def _edit_post(tch: str, tts: str, parent: str, instruction: str) -> str:
     if msg.get("user_id") != runtime.CHIAKI_SELF:
         return "notself"  # 投稿は在るが Chiaki AI のものでない（戸田自身の投稿リンク等）＝編集対象外
     text = msg.get("text", "")
+
+    def _apply(new_text: str) -> bool:
+        # 成立確認（整合パック12・2026-07-29）: chat.updateの成否を見ずに「直しました！」と
+        # 宣言していた＝失敗時に発話と記録が両方嘘になる（applyのnudgeはts検証済みなのに非対称だった）
+        res = source.update_message(tch, tts, new_text)
+        return bool(isinstance(res, dict) and (res.get("ok") or res.get("dry")))
+
     # 1) まず決定論で直す＝確実（曖昧な指示でも表記違反は必ず直る）
     enforced = observe.enforce_regulations(text)
     if enforced != text:
-        source.update_message(tch, tts, enforced)
+        if not _apply(enforced):
+            print(f"[intake] edit failed(enforce) ch={tch} ts={tts}")
+            return "editfail"
         print(f"[intake] edited(enforce) ch={tch} ts={tts}")
+        _effect("edited")
         return "edited"
     # 2) 決定論で変化なし → 具体指示があれば Haiku で（文面の言い換え等）
     revised = _revise(text, instruction)
     if revised and revised.strip() != (text or "").strip():
-        source.update_message(tch, tts, observe.enforce_regulations(revised))
+        if not _apply(observe.enforce_regulations(revised)):
+            print(f"[intake] edit failed(revise) ch={tch} ts={tts}")
+            return "editfail"
         print(f"[intake] edited(revise) ch={tch} ts={tts}")
+        _effect("edited")
         return "edited"
     return "norevise"
 
@@ -404,6 +440,7 @@ def _maybe_edit_root(ch: str, root: str, instruction: str = "", raw: str = "") -
 
 _EDIT_MSG = {
     "edited": "直しました！",
+    "editfail": "編集の書き込みに失敗しました。少し時間をおいて、もう一度お願いできますか？",
     # 2026-07-13 文面刷新: 旧文の「AIコーディングエージェントをお使いください」は窓口一本化の設計と矛盾
     # （どんな依頼でもまず受けるのがChiaki AI）。GPT不通時のフォールバックで戸田さんに出る文なので、
     # 会話を断ち切らず具体を聞き返すだけにする。
@@ -772,6 +809,7 @@ def _propose_agent(m: dict, ch: str, root: str, items: dict):
             category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "",
             basis=f"戸田さん指示（Slack・{dt.datetime.now(JST).strftime('%Y-%m-%d')}）")
         if url:
+            _effect("company_rule")  # 発話ゲート: 「社内レギュレーションに登録しました」の裏付け
             _reply(ch, root, reply, url)
             _log("company_rule", ch, root, m, url=url)
         elif not notion._token():  # ローカル確認(DRY)と実API失敗を区別＝誤って権限確認を求めない
@@ -872,6 +910,13 @@ def _maybe_enqueue_codex(it: dict, m: dict, ch: str, root: str, ok: list, force=
             "ts": runtime.now_ts(), "requested_by": m.get("user_id"),
             "summary": p.get("要約") or "", "detail": p.get("詳細") or "",
             "issue_url": u or "", "channel": ch, "thread": root})
+    _effect("queued")  # 発話ゲート: 「Codexに回します・進捗を報告します」の裏付け
+    try:  # 約束台帳（整合パック14）: 「進捗はこのスレッドに報告します」を追跡可能な約束として記録
+        runtime.append_jsonl("promises.jsonl", {
+            "at": runtime.now_ts(), "kind": "codex_report", "ch": ch, "root": root,
+            "due": runtime.now_ts() + 24 * 3600})
+    except Exception:
+        pass
     try:  # ランナーを即起動（cron待ちで最大10分黙らせない）。多重起動は runner 内の flock が防ぐ
         import subprocess
         script = os.path.join(os.environ.get("HERMES_PROFILE_DIR", ""), "scripts/codex_runner.py")
@@ -969,6 +1014,7 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
             category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "",
             basis=f"戸田さん指示（Slack・{dt.datetime.now(JST).strftime('%Y-%m-%d')}）")
         if url:
+            _effect("company_rule")  # 発話ゲート: 「社内レギュレーションに登録しました」の裏付け
             _reply(ch, root, reply, url)
             _log("company_rule", ch, root, m, url=url)
         elif not notion._token():  # ローカル確認(DRY)と実API失敗を区別＝誤って権限確認を求めない
@@ -1207,8 +1253,14 @@ def _handle_retract(m: dict, ch: str, root: str) -> int:
         print(f"[intake] retract指摘は記録と矛盾＝取り消しせず事実を提示 ch={ch} root={root}")
         return 1
     if target:
-        source.update_message(ch, target["ts"],
-                              (target.get("text") or "") + "\n\n※この投稿は誤りでした。取り消します。")
+        res = source.update_message(ch, target["ts"],
+                                    (target.get("text") or "") + "\n\n※この投稿は誤りでした。取り消します。")
+        if not (isinstance(res, dict) and (res.get("ok") or res.get("dry"))):
+            # 成立確認（整合パック12）: 注記が書けていないのに「取り消しました」と言わない・裁定も閉じない
+            _reply(ch, root, "取り消し注記の書き込みに失敗しました。少し時間をおいて、"
+                             "もう一度お願いできますか？（記録はまだ変更していません）")
+            return 1
+        _effect("retracted")  # 発話ゲート: 「取り消しました」の裏付け
     post_ts = {p.get("ts") for p in posts}
     closed = 0
     with runtime.approvals_lock():  # R3: 裁定台帳の書き込みは全系統でこのロック＝遷移の競合消去を根治
@@ -1256,7 +1308,10 @@ def _progress_watch(ch: str, root: str, m: dict):
         if done.wait(max(0.0, _PROGRESS_FIRST_SEC - (time.time() - t0))):
             return
         if direction:
-            _reply(ch, root, direction)
+            try:
+                _reply(ch, root, direction)
+            except Exception as e:  # 経過共有の投稿失敗で見張りスレッドを落とさない（本応答は別系）
+                print(f"[intake] progress post failed: {e}")
         for note in _PROGRESS_NOTES:
             if done.wait(_PROGRESS_EVERY_SEC):
                 return
@@ -1265,7 +1320,10 @@ def _progress_watch(ch: str, root: str, m: dict):
                 llm.reset_used()  # 固定文＝モデルタグなし
             except Exception:
                 pass
-            _reply(ch, root, note)
+            try:
+                _reply(ch, root, note)
+            except Exception as e:
+                print(f"[intake] progress post failed: {e}")
 
     threading.Thread(target=_run, daemon=True).start()
     return done.set
@@ -1344,6 +1402,7 @@ def main():
             _llm.reset_used()
         except Exception:
             pass
+        _TURN_EFFECTS.clear()  # 発話ゲートの照合先＝メッセージ処理ごとにリセット
         it = _find_awaiting(items, ch, root, m["ts"])
         try:
             if _hint == "escalate" or m.get("user_id") != runtime.TODA:
@@ -1398,6 +1457,7 @@ def main():
             # 再試行は台帳経路（status=failed・10分間隔）が続けるので、復旧すれば本応答が改めて届く。
             if prior != "failed" and m.get("user_id") == runtime.TODA:
                 try:
+                    _effect("retry_scheduled")  # 台帳failedの自動再試行が実在＝この約束には実行主体がある
                     _reply(ch, root, "すみません、いま応答システム全体が不調で返答を作れませんでした。"
                                      "自動で再試行するので、復旧し次第このスレッドに改めて返信します！")
                 except Exception:

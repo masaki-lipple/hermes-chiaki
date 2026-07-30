@@ -104,11 +104,38 @@ def _post(text: str) -> str:
     return (r or {}).get("ts") or ""
 
 
+_TURN_EFFECTS: set = set()  # 発話ゲートの照合先（整合パック11）＝スレッド処理ごとにリセット
+
+
+def _fulfill(ch: str, root: str) -> None:
+    """約束台帳（整合パック14）: 「このスレッドに報告します」の履行を記録（self-healthが監査）。"""
+    try:
+        runtime.append_jsonl("promises.jsonl", {"at": runtime.now_ts(), "kind": "fulfill",
+                                                "ch": ch, "root": root})
+    except Exception:
+        pass
+
+
+def _promise(ch: str, root: str, due_hours: float = 24) -> None:
+    try:
+        runtime.append_jsonl("promises.jsonl", {"at": runtime.now_ts(), "kind": "codex_report",
+                                                "ch": ch, "root": root,
+                                                "due": runtime.now_ts() + due_hours * 3600})
+    except Exception:
+        pass
+
+
 def _reply(thread_ts: str, body: str, ch: str = "") -> None:
     """スレッド返信。ch未指定は#8902（2026-07-13 監査: #8902決め打ちだと#5902等の会話スレッド発の
     依頼で、開始・完了報告が存在しないスレッドts宛てになりSlackが黙ってトップレベル化＝報告の迷子）。"""
     # GPT反射の生メンション漏れを中和（第三者ping・架空宛名の防止。宛名は_fmtが付ける）
     body = re.sub(r"<@U[A-Z0-9]+>", "", body or "")
+    # 発話ゲート（整合パック11）: 実行の主張・約束を当ターンの実効と照合（裏付けの無い文は出さない）
+    body, dropped = convo.claims_gate(body, _TURN_EFFECTS)
+    if dropped:
+        print(f"[codex-runner] 発話ゲート: 裏付けの無い実行主張を{len(dropped)}文落とした: {dropped[0][:80]}")
+    if not body.strip():
+        body = "すみません、うまく答えをまとめられませんでした。もう一度お願いできますか？"
     source.post_thread_reply(ch or CH, thread_ts, _fmt(body))
 
 
@@ -199,6 +226,7 @@ def _process_threads() -> None:
             llm.reset_used()
         except Exception:
             pass
+        _TURN_EFFECTS.clear()  # 発話ゲートの照合先＝スレッド処理ごとにリセット
         # 判断は会話コア（Phase A+B＝統一文脈パッケージ）。不成立時は従来の分類へフォールバック
         act = None
         # tsを渡す＝会話台帳のm_tsに記録され、already_repliedの二重発話ガードが双方向に効く
@@ -279,6 +307,8 @@ def _process_threads() -> None:
                 url = notion.create_company_regulation(
                     rule=c.get("rule") or "", content=c.get("content") or "",
                     category=c.get("category") or "", wrong=c.get("wrong") or "", right=c.get("right") or "")
+                if url:
+                    _TURN_EFFECTS.add("company_rule")  # 発話ゲート: 「登録しました」の裏付け
                 # 本体の副作用（DB登録）が済んだ時点で既読化＝返信失敗の再試行で二重登録しない
                 _done("replied")
                 try:
@@ -298,6 +328,8 @@ def _process_threads() -> None:
                     "detail": act.get("instruction") or text,
                     "issue_url": t.get("issue_url") or "",
                     "continue_branch": t.get("branch") or "", "thread": tts, "channel": tch})
+                _TURN_EFFECTS.add("queued")  # 発話ゲート: 「Codexに任せます」の裏付け
+                _promise(tch, tts)  # 約束台帳: このスレッドへの報告を追跡
                 # 本体の副作用（キュー投入）が済んだ時点で既読化＝返信失敗の再試行で二重投入しない
                 _done("queued")
                 try:
@@ -427,6 +459,7 @@ def main():
                 f"（Issueは残っています）。" + (f"\n{item['issue_url']}" if item.get("issue_url") else ""))
         if item.get("thread"):
             source.post_thread_reply(item.get("channel") or CH, item["thread"], note)
+            _fulfill(item.get("channel") or CH, item["thread"])  # 上限の案内も「報告」の履行
         else:
             _post(note)
         print("[codex-runner] quota blocked -> skip run")
@@ -441,6 +474,7 @@ def main():
             llm.reset_used()
         except Exception:
             pass
+        _promise(origin_ch, origin_thread, due_hours=12)  # 約束台帳: 報告の不履行をself-healthが監査
         _reply(origin_thread, "Codexが作業を開始しました。終わったらこのスレッドに報告します。",
                ch=origin_ch)
     print(f"[codex-runner] start {branch}: {summary[:60]}")
@@ -505,12 +539,14 @@ def main():
         t = reg_items.get(item["thread"])
         tch = item.get("channel") or (t or {}).get("channel") or CH
         source.post_thread_reply(tch, item["thread"], body)
+        _fulfill(tch, item["thread"])  # 約束台帳: 「このスレッドに報告します」の履行
         if t is not None:
             t["last_output"] = _tail(res.get("output") or "", 900)
             # last_seen_ts はここで進めない＝Codex実行中に届いた戸田さんの返信を
             # 既読扱いで飲み込まない（2026-07-03「同じことは起きない？」が黙殺された実バグ）
     elif origin_thread:
         source.post_thread_reply(origin_ch, origin_thread, body)
+        _fulfill(origin_ch, origin_thread)  # 約束台帳: 「このスレッドに報告します」の履行
         _register_thread(reg_items, origin_thread, item, branch, res, ch=origin_ch)
         if res["ok"] and res["changed"]:
             # 完了（レビュー待ち）はトップレベル（#8902＝レビュー待ち一覧）にも改めて報告（2026-07-03 戸田

@@ -80,6 +80,23 @@ APPROVALS_LOCK = "/tmp/chiaki_apply.lock"  # 裁定台帳の書き手全員が�
 INTAKE_ITEMS_LOCK = "/tmp/chiaki_intake_items.lock"  # chiaki_intake.json の書き手（intake/codex-runner）が共有
 
 
+def caller_skill() -> str:
+    """呼び出し元スキル名（スタックから skills/lipple/<name>/ を探す）。R5計測とR6出口台帳で共用。"""
+    try:
+        import inspect
+        from pathlib import Path as _P
+        for fr in inspect.stack()[2:]:
+            parts = _P(fr.filename).parts
+            if "skills" in parts:
+                i = parts.index("skills")
+                if len(parts) > i + 2:
+                    return parts[i + 2] if parts[i + 1] == "lipple" else parts[i + 1]
+        import sys as _sys
+        return _P(_sys.argv[0]).stem or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def intake_lock():
     """chiaki_intake.json の読み書き排他（2026-07-23 監査レビュー確定バグ: intakeがLLM待ちの間に
     codex-runnerのpropose引き継ぎが挿入したawaiting_confirmを、intakeの古いコピーの丸ごと上書きが

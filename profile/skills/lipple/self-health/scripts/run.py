@@ -191,6 +191,28 @@ def _ruling_swallowed(now: float) -> list[str]:
     return warns
 
 
+def _promises_broken(now: float) -> list[str]:
+    """約束の履行チェック（整合パック14・2026-07-29 戸田GO）。「このスレッドに報告します」型の
+    定型約束（promises.jsonl・intake/codex-runnerが発行、報告投稿時にfulfillを記録）が期限を過ぎて
+    未履行なら警告する。警告は約束ごとに1回（warned行で冪等）。"""
+    rows = runtime.read_jsonl("promises.jsonl")
+    fulfilled = {(r.get("ch"), r.get("root")) for r in rows if r.get("kind") == "fulfill"}
+    warned = {(r.get("ch"), r.get("root")) for r in rows if r.get("kind") == "warned"}
+    warns = []
+    for r in rows:
+        if r.get("kind") != "codex_report":
+            continue
+        key = (r.get("ch"), r.get("root"))
+        if key in fulfilled or key in warned or now < float(r.get("due") or 0):
+            continue
+        warns.append(f"「このスレッドに報告します」が期限を過ぎて未履行: ch={r.get('ch')} "
+                     f"thread={r.get('root')}（Codexの実行かキューの詰まりを確認）")
+        warned.add(key)
+        runtime.append_jsonl("promises.jsonl", {"at": now, "kind": "warned",
+                                                "ch": r.get("ch"), "root": r.get("root")})
+    return warns
+
+
 def main() -> None:
     now = runtime.now_ts()
     st = runtime.load_json(STATE, {})
@@ -202,6 +224,7 @@ def main() -> None:
     warns += _swallowed(st, now)
     warns += _apply_stale(now)
     warns += _ruling_swallowed(now)
+    warns += _promises_broken(now)
     runtime.save_json(STATE, st)
     if not warns:
         print("[self-health] ok")
