@@ -84,20 +84,52 @@ def display_name(uid: str) -> str:
 # effects の語彙: filed(起票URL作成) / queued(codex_queue投入) / edited(chat.update成立) /
 #   retracted(取り消し注記成立) / posted(対象スレッドへ投稿) / company_rule(社内DB登録) /
 #   retry_scheduled(台帳failedによる自動再試行が実在)
-_CLAIM_RULES = [
-    (re.compile(r"(登録|起票)(しました|済み)"), "filed"),
+# 未来形（これから実行する約束）は当ターンの実効が必須。過去形（〜しました/済み）は正当な
+# 「過去の事実の言明」があり得るため、記録（起票URL・nudge・キュー等）の裏付けでも通す
+# （2026-07-29 敵対検証で確定: 初版は「これ登録された？」への正しい回答まで検閲していた）。
+_CLAIM_FUTURE = [
     (re.compile(r"(Issue|イシュー)[^。！？\n]{0,10}(登録|起票)します"), "filed"),
-    (re.compile(r"Codexに(回します|回しました|任せます|任せました|実装させます)"), "queued"),
+    (re.compile(r"Codexに(回します|任せます|実装させます)"), "queued"),
     (re.compile(r"進捗[^。！？\n]{0,10}(スレッド|ここ)[^。！？\n]{0,6}(返します|報告します)"), "queued"),
-    (re.compile(r"(投稿|送信)しました"), "posted"),
-    (re.compile(r"取り消しました"), "retracted"),
-    (re.compile(r"社内レギュレーション[^。！？\n]{0,8}(登録|保存)しました"), "company_rule"),
     (re.compile(r"(あとで|後で|のちほど|改めて|確認して(から)?)[^。！？\n]{0,14}"
                 r"(返します|返信します|報告します|連絡します|お知らせします)"), "retry_scheduled"),
 ]
+_CLAIM_PAST = [
+    (re.compile(r"(登録|起票)(しました|済み)"), "filed"),
+    (re.compile(r"Codexに(回しました|任せました)"), "queued"),
+    (re.compile(r"(投稿|送信)しました"), "posted"),
+    (re.compile(r"取り消しました"), "retracted"),
+    (re.compile(r"社内レギュレーション[^。！？\n]{0,8}(登録|保存)しました"), "company_rule"),
+]
 
 
-def claims_gate(text: str, effects: set) -> tuple[str, list[str]]:
+def _past_evidence(eff: str, ch: str, root: str) -> bool:
+    """過去形の実行主張の裏付けを記録から確認（決定論・スレッドスコープ）。"""
+    try:
+        if not root:
+            return False
+        if eff == "filed":
+            items = runtime.load_json("chiaki_intake.json", {"items": {}}).get("items", {})
+            return any(v.get("thread_root") == root and v.get("page_urls") for v in items.values())
+        if eff == "company_rule":
+            return any(r.get("event") == "company_rule" and r.get("thread_root") == root
+                       for r in runtime.read_jsonl("intake_log.jsonl"))
+        if eff == "queued":
+            return any(str(q.get("thread")) == root for q in runtime.read_jsonl("codex_queue.jsonl"))
+        pend = runtime.load_json("pending_approvals.json", {"items": {}}).get("items", {})
+        it = pend.get(root) or next((v for v in pend.values() if v.get("source_ts") == root), None)
+        if not it:
+            return False
+        if eff == "posted":
+            return bool(it.get("nudge_ts"))
+        if eff == "retracted":
+            return it.get("status") == "retracted"
+    except Exception:
+        return False
+    return False
+
+
+def claims_gate(text: str, effects: set, ch: str = "", root: str = "") -> tuple[str, list[str]]:
     """(残す本文, 落とした文のリスト)。疑問文（？で終わる文＝確認の提案）は対象外。"""
     kept: list[str] = []
     dropped: list[str] = []
@@ -106,8 +138,12 @@ def claims_gate(text: str, effects: set) -> tuple[str, list[str]]:
         if not s or s.endswith(("？", "?")):
             kept.append(sent)
             continue
-        bad = next((pat.pattern for pat, eff in _CLAIM_RULES
+        bad = next((pat.pattern for pat, eff in _CLAIM_FUTURE
                     if pat.search(s) and eff not in effects), None)
+        if not bad:
+            bad = next((pat.pattern for pat, eff in _CLAIM_PAST
+                        if pat.search(s) and eff not in effects
+                        and not _past_evidence(eff, ch, root)), None)
         (dropped if bad else kept).append(sent)
     return "".join(kept).strip(), [d.strip() for d in dropped if d.strip()]
 

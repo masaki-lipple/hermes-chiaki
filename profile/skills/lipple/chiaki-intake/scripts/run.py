@@ -224,12 +224,15 @@ def _effect(name: str) -> None:
     _TURN_EFFECTS.add(name)
 
 
-def _reply(ch: str, root: str, body: str, url: str = "") -> None:
+def _reply(ch: str, root: str, body: str, url: str = "", gate: bool = True) -> None:
     # 発話ゲート（整合パック11・2026-07-29）: 実行の主張・約束を当ターンの実効と照合し、
-    # 裏付けの無い文は投稿しない（プロンプト規約の決定論での保証）
-    body, dropped = convo.claims_gate(body, _TURN_EFFECTS)
-    if dropped:
-        print(f"[intake] 発話ゲート: 裏付けの無い実行主張を{len(dropped)}文落とした: {dropped[0][:80]}")
+    # 裏付けの無い文は投稿しない（プロンプト規約の決定論での保証）。過去形の主張は記録の裏付けでも
+    # 通す。gate=False＝経過共有（progress_watch）の「これからやる」方向性文は対象外
+    # （敵対検証で確定: 処理中の意図表明が全落ちして虚偽の失敗宣言に化けていた）
+    if gate:
+        body, dropped = convo.claims_gate(body, _TURN_EFFECTS, ch, root)
+        if dropped:
+            print(f"[intake] 発話ゲート: 裏付けの無い実行主張を{len(dropped)}文落とした: {dropped[0][:80]}")
     if not body.strip():
         body = "すみません、うまく答えをまとめられませんでした。もう一度お願いできますか？"
     b = runtime.ensure_punct(observe.enforce_regulations(_neutralize_mentions(body)))
@@ -692,11 +695,13 @@ def _log(event: str, ch: str = "", root: str = "", m: dict = None, **extra) -> N
 
 
 def _await(items: dict, m: dict, ch: str, root: str, proposals: list, reply_text: str = "") -> int:
+    # 提示文の投稿が先・確認ターンの登録が後（2026-07-29 敵対検証: 逆順だと投稿失敗の再試行が
+    # 「m.ts in items」の冪等ガードに当たって即終端し、質問が一度も出ないまま幽霊awaitingが残る）
+    _reply(ch, root, reply_text or _propose_text(proposals))  # 会話コアの自然な提示文を優先・無ければ定型
     items[m["ts"]] = {"status": "awaiting_confirm", "channel": ch, "thread_root": root,
                       "mention_ts": m["ts"], "mention_text": m["text"],
                       "permalink": _permalink(ch, m["ts"], root), "proposals": proposals,
                       "proposed_at": runtime.now_ts(), "last_seen_ts": m["ts"], "propose_count": 1}
-    _reply(ch, root, reply_text or _propose_text(proposals))  # 会話コアの自然な提示文を優先・無ければ定型
     _log("propose", ch, root, m,
          分類=[{"type": p.get("type"), "kind": p.get("issue_kind") or p.get("rule_kind") or "",
                "要約": (p.get("要約") or "")[:100], "routine": bool(p.get("routine"))} for p in proposals])
@@ -810,8 +815,11 @@ def _propose_agent(m: dict, ch: str, root: str, items: dict):
             basis=f"戸田さん指示（Slack・{dt.datetime.now(JST).strftime('%Y-%m-%d')}）")
         if url:
             _effect("company_rule")  # 発話ゲート: 「社内レギュレーションに登録しました」の裏付け
-            _reply(ch, root, reply, url)
-            _log("company_rule", ch, root, m, url=url)
+            _log("company_rule", ch, root, m, url=url)  # 記録が先＝返信失敗の再試行で二重登録しない
+            try:
+                _reply(ch, root, reply, url)
+            except Exception as e:  # DB登録は成立済み＝返信失敗で例外を上げると再試行が重複登録する
+                print(f"[intake] company_rule返信失敗（登録済み・続行）: {e}")
         elif not notion._token():  # ローカル確認(DRY)と実API失敗を区別＝誤って権限確認を求めない
             _reply(ch, root, reply + "（ローカル確認のため実際の保存はしていません）")
         else:
@@ -1015,8 +1023,11 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
             basis=f"戸田さん指示（Slack・{dt.datetime.now(JST).strftime('%Y-%m-%d')}）")
         if url:
             _effect("company_rule")  # 発話ゲート: 「社内レギュレーションに登録しました」の裏付け
-            _reply(ch, root, reply, url)
-            _log("company_rule", ch, root, m, url=url)
+            _log("company_rule", ch, root, m, url=url)  # 記録が先＝返信失敗の再試行で二重登録しない
+            try:
+                _reply(ch, root, reply, url)
+            except Exception as e:  # DB登録は成立済み＝返信失敗で例外を上げると再試行が重複登録する
+                print(f"[intake] company_rule返信失敗（登録済み・続行）: {e}")
         elif not notion._token():  # ローカル確認(DRY)と実API失敗を区別＝誤って権限確認を求めない
             _reply(ch, root, reply + "（ローカル確認のため実際の保存はしていません）")
         else:
@@ -1252,7 +1263,9 @@ def _handle_retract(m: dict, ch: str, root: str) -> int:
                                 "どの投稿が誤りだったか教えてもらえますか？")
         print(f"[intake] retract指摘は記録と矛盾＝取り消しせず事実を提示 ch={ch} root={root}")
         return 1
-    if target:
+    if target and "※この投稿は誤りでした" in (target.get("text") or ""):
+        _effect("retracted")  # 注記済み（前回の再試行等）＝多重追記しない（2026-07-29 敵対検証）
+    elif target:
         res = source.update_message(ch, target["ts"],
                                     (target.get("text") or "") + "\n\n※この投稿は誤りでした。取り消します。")
         if not (isinstance(res, dict) and (res.get("ok") or res.get("dry"))):
@@ -1272,7 +1285,10 @@ def _handle_retract(m: dict, ch: str, root: str) -> int:
                 closed += 1
         if closed:
             runtime.save_json("pending_approvals.json", pend)
-    _reply(ch, root, ans or "失礼しました！さきほどの投稿は誤りだったので取り消しました。")
+    try:
+        _reply(ch, root, ans or "失礼しました！さきほどの投稿は誤りだったので取り消しました。")
+    except Exception as e:  # 注記・クローズは成立済み＝返信失敗で例外を上げると再試行が注記を多重追記する
+        print(f"[intake] retract返信失敗（取り消し済み・続行）: {e}")
     return 1
 
 
@@ -1309,7 +1325,9 @@ def _progress_watch(ch: str, root: str, m: dict):
             return
         if direction:
             try:
-                _reply(ch, root, direction)
+                # gate=False: 方向性＝処理中の意図表明（「起票します」等）で、当ターンの実効は
+                # まだ無いのが正常。ゲートに掛けると全落ち→虚偽の「まとめられませんでした」になる
+                _reply(ch, root, direction, gate=False)
             except Exception as e:  # 経過共有の投稿失敗で見張りスレッドを落とさない（本応答は別系）
                 print(f"[intake] progress post failed: {e}")
         for note in _PROGRESS_NOTES:

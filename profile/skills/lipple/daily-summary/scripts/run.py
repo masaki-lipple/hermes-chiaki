@@ -88,7 +88,9 @@ def build(now: float) -> str:
         lines.append(f"• LLM呼び出し: {len(usage)}回（"
                      + "・".join(f"{m}={n}" for m, n in per.most_common()) + "）")
 
-    # 発話整合の監査（整合パック15・2026-07-29）: きょうの会話発話を決定論で突合。違反ゼロ＝行なし
+    # 発話整合の監査（整合パック15・2026-07-29）: きょうの会話発話を決定論で突合。違反ゼロ＝行なし。
+    # 会話台帳のreplyはゲート適用前の文面のため、実行主張の文言チェックはしない（ゲートが防いだ分まで
+    # 違反として誤報になる＝敵対検証で確定）。ここは「file発話に起票の実体があるか」だけを見る
     try:
         from lib import convo
         items = runtime.load_json("chiaki_intake.json", {"items": {}}).get("items", {})
@@ -96,11 +98,8 @@ def build(now: float) -> str:
         for e in (convo.memory().get("ledger") or []):
             if float(e.get("ts") or 0) < d0:
                 continue
-            act, rep = e.get("action") or "", e.get("reply") or ""
-            if act in ("answer", "silent") and convo.claims_gate(rep, set())[1]:
-                bad.append(f"answerに実行主張（{e.get('dt', '')}）")
-            elif act == "file" and not any(v.get("thread_root") == e.get("root")
-                                           and v.get("page_urls") for v in items.values()):
+            if (e.get("action") == "file" and not any(v.get("thread_root") == e.get("root")
+                                                      and v.get("page_urls") for v in items.values())):
                 bad.append(f"file発話に起票URLの裏付けなし（{e.get('dt', '')}）")
         if bad:
             lines.append(f"• 発話整合: 要確認{len(bad)}件（" + "／".join(bad[:3]) + "）")

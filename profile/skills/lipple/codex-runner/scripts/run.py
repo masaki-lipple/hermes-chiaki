@@ -130,8 +130,9 @@ def _reply(thread_ts: str, body: str, ch: str = "") -> None:
     依頼で、開始・完了報告が存在しないスレッドts宛てになりSlackが黙ってトップレベル化＝報告の迷子）。"""
     # GPT反射の生メンション漏れを中和（第三者ping・架空宛名の防止。宛名は_fmtが付ける）
     body = re.sub(r"<@U[A-Z0-9]+>", "", body or "")
-    # 発話ゲート（整合パック11）: 実行の主張・約束を当ターンの実効と照合（裏付けの無い文は出さない）
-    body, dropped = convo.claims_gate(body, _TURN_EFFECTS)
+    # 発話ゲート（整合パック11）: 実行の主張・約束を当ターンの実効と照合（裏付けの無い文は出さない。
+    # 過去形の主張は記録の裏付けでも通す＝ch/rootを渡す）
+    body, dropped = convo.claims_gate(body, _TURN_EFFECTS, ch or CH, thread_ts)
     if dropped:
         print(f"[codex-runner] 発話ゲート: 裏付けの無い実行主張を{len(dropped)}文落とした: {dropped[0][:80]}")
     if not body.strip():
@@ -458,8 +459,9 @@ def main():
                 f"ChatGPTプランのCodex利用上限に到達中のため、実装はClaude Codeが引き受けます"
                 f"（Issueは残っています）。" + (f"\n{item['issue_url']}" if item.get("issue_url") else ""))
         if item.get("thread"):
-            source.post_thread_reply(item.get("channel") or CH, item["thread"], note)
-            _fulfill(item.get("channel") or CH, item["thread"])  # 上限の案内も「報告」の履行
+            res = source.post_thread_reply(item.get("channel") or CH, item["thread"], note)
+            if isinstance(res, dict) and res.get("ts"):  # 投稿が成立したときだけ履行（偽装防止）
+                _fulfill(item.get("channel") or CH, item["thread"])  # 上限の案内も「報告」の履行
         else:
             _post(note)
         print("[codex-runner] quota blocked -> skip run")
@@ -538,15 +540,17 @@ def main():
     if cont and item.get("thread"):
         t = reg_items.get(item["thread"])
         tch = item.get("channel") or (t or {}).get("channel") or CH
-        source.post_thread_reply(tch, item["thread"], body)
-        _fulfill(tch, item["thread"])  # 約束台帳: 「このスレッドに報告します」の履行
+        res_post = source.post_thread_reply(tch, item["thread"], body)
+        if isinstance(res_post, dict) and res_post.get("ts"):  # 投稿が成立したときだけ履行
+            _fulfill(tch, item["thread"])  # 約束台帳: 「このスレッドに報告します」の履行
         if t is not None:
             t["last_output"] = _tail(res.get("output") or "", 900)
             # last_seen_ts はここで進めない＝Codex実行中に届いた戸田さんの返信を
             # 既読扱いで飲み込まない（2026-07-03「同じことは起きない？」が黙殺された実バグ）
     elif origin_thread:
-        source.post_thread_reply(origin_ch, origin_thread, body)
-        _fulfill(origin_ch, origin_thread)  # 約束台帳: 「このスレッドに報告します」の履行
+        res_post = source.post_thread_reply(origin_ch, origin_thread, body)
+        if isinstance(res_post, dict) and res_post.get("ts"):  # 投稿が成立したときだけ履行
+            _fulfill(origin_ch, origin_thread)  # 約束台帳: 「このスレッドに報告します」の履行
         _register_thread(reg_items, origin_thread, item, branch, res, ch=origin_ch)
         if res["ok"] and res["changed"]:
             # 完了（レビュー待ち）はトップレベル（#8902＝レビュー待ち一覧）にも改めて報告（2026-07-03 戸田

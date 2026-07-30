@@ -53,6 +53,22 @@ check("11 retry-backed promise kept", not dropped)
 kept, dropped = convo.claims_gate("さきほどの投稿は取り消しました。", set())
 check("11 retract claim needs effect", len(dropped) == 1)
 
+# 過去形の主張は「記録の裏付け」でも通る（2026-07-29 敵対検証: 正当な過去事実の回答まで検閲していた）
+runtime.save_json("chiaki_intake.json", {"items": {"a": {
+    "thread_root": "77.0", "status": "filed", "page_urls": ["http://x"]}}})
+kept, dropped = convo.claims_gate("こちらは既に登録済みです！", set(), MGMT, "77.0")
+check("11 past claim passes with filed evidence", not dropped)
+kept, dropped = convo.claims_gate("こちらは既に登録済みです！", set(), MGMT, "99.0")
+check("11 past claim without evidence dropped", dropped)
+kept, dropped = convo.claims_gate("Issueに登録します。", set(), MGMT, "77.0")
+check("11 future promise still strict (evidence not enough)", dropped)
+runtime.save_json("pending_approvals.json", {"items": {"700.0": {
+    "status": "awaiting_completion", "source_ts": "5.0", "nudge_ts": "701.0"}}})
+kept, dropped = convo.claims_gate("記録では対象スレッドへ修正依頼を投稿しました。", set(), MGMT, "700.0")
+check("11 posted claim passes with nudge evidence", not dropped)
+runtime.save_json("chiaki_intake.json", {"items": {}})
+runtime.save_json("pending_approvals.json", {"items": {}})
+
 # ════ intake: _replyのゲート適用・空文フォールバック・ts検証（12） ════
 R = f"{REPO}/profile/skills/lipple/chiaki-intake/scripts/run.py"
 g = {"__file__": R, "__name__": "intake_mod"}
@@ -67,6 +83,10 @@ check("11 all-dropped -> honest fallback", "まとめられませんでした" i
 g["_effect"]("filed")
 g["_reply"]("CX", "1.0", "登録しました！")
 check("11 effect unlocks claim", "登録しました" in posted[-1])
+g["_TURN_EFFECTS"].clear()
+source.post_thread_reply = lambda ch, root, text: posted.append(text) or {"ok": True, "ts": "1.0"}
+g["_reply"]("CX", "1.0", "内容を確認して、Codexに回します！", gate=False)
+check("11 progress-watch direction exempt (gate=False)", "Codexに回します" in posted[-1])
 source.post_thread_reply = lambda ch, root, text: {"ok": False}
 try:
     g["_reply"]("CX", "1.0", "テスト")
@@ -74,6 +94,16 @@ try:
 except RuntimeError:
     raised = True
 check("12 reply without ts raises (retryable)", raised)
+
+# _await=提示文の投稿が先（投稿失敗で幽霊awaitingを作らない・2026-07-29 敵対検証）
+items_t = {}
+try:
+    g["_await"](items_t, {"ts": "50.0", "text": "依頼"}, "CX", "50.0",
+                [{"type": "issue", "要約": "x", "詳細": "y"}])
+    await_raised = False
+except RuntimeError:
+    await_raised = True
+check("12 await posts before registering (no ghost)", await_raised and not items_t)
 
 # ════ 12: _edit_post の成立確認 ════
 source.read_thread = lambda ch, root: [{"ts": "5.0", "user_id": runtime.CHIAKI_SELF,
@@ -109,6 +139,21 @@ pend = runtime.load_json("pending_approvals.json", {})
 check("12 retract success -> closed + effect",
       pend["items"]["800.0"]["status"] == "retracted" and "retracted" in g["_TURN_EFFECTS"])
 
+# 注記済みの投稿には多重追記しない＋最終返信の失敗で例外を上げない（2026-07-29 敵対検証）
+updates = []
+source.update_message = lambda ch, ts, text: updates.append(text) or {"ok": True}
+THREAD[0]["text"] = "対象スレッドへ投稿しました。\n\n※この投稿は誤りでした。取り消します。"
+runtime.save_json("pending_approvals.json", {"items": {"800.0": {
+    "status": "awaiting_completion", "source_channel": "CX", "source_ts": "900.0"}}})
+def reply_fail(ch, root, text):
+    raise RuntimeError("Slack down")
+g["_reply"] = reply_fail
+r = g["_handle_retract"]({"text": "これ間違いだよ"}, "CX", "900.0")
+pend = runtime.load_json("pending_approvals.json", {})
+check("12 annotated post not re-annotated + reply failure contained",
+      r == 1 and not updates and pend["items"]["800.0"]["status"] == "retracted")
+g["_reply"] = lambda ch, root, text: replies.append(text)
+
 # ════ 13: 出口台帳 ════
 source._out_track("reply", "CX", {"ok": True, "ts": "9.0"}, thread="1.0", text="本文テスト")
 rows = runtime.read_jsonl("out_ledger.jsonl")
@@ -122,16 +167,23 @@ check("13 failure tracked", runtime.read_jsonl("out_ledger.jsonl")[-1]["ok"] is 
 C = f"{REPO}/profile/skills/lipple/codex-runner/scripts/run.py"
 gc = {"__file__": C, "__name__": "codex_mod"}
 exec(compile(open(C).read(), C, "exec"), gc)
+gc["_fulfill"]("CX", "70.0")                 # 過去の履行（約束より前）＝新しい約束をマスクしない
 gc["_promise"]("CX", "70.0", due_hours=-1)   # すでに期限切れの約束
 gc["_promise"]("CX", "80.0", due_hours=-1)
-gc["_fulfill"]("CX", "80.0")                 # 80.0 は履行済み
+gc["_fulfill"]("CX", "80.0")                 # 80.0 は約束の後に履行済み
 gc["_promise"]("CX", "90.0", due_hours=24)   # 90.0 は期限内
 H = f"{REPO}/profile/skills/lipple/self-health/scripts/run.py"
 gh = {"__file__": H, "__name__": "health_mod"}
 exec(compile(open(H).read(), H, "exec"), gh)
 warns = gh["_promises_broken"](runtime.now_ts())
-check("14 overdue unfulfilled warned once", len(warns) == 1 and "70.0" in warns[0])
-check("14 warn idempotent", gh["_promises_broken"](runtime.now_ts()) == [])
+check("14 overdue unfulfilled warned (old fulfill does not mask)",
+      len(warns) == 1 and "70.0" in warns[0])
+check("14 warned row deferred until post succeeds",
+      not any(r.get("kind") == "warned" for r in runtime.read_jsonl("promises.jsonl"))
+      and len(gh["_PENDING_WARNED"]) == 1)
+runtime.append_jsonl("promises.jsonl", {**gh["_PENDING_WARNED"][0], "at": runtime.now_ts()})
+gh["_PENDING_WARNED"].clear()  # mainの投稿成立後の記録を再現
+check("14 warn idempotent after recorded", gh["_promises_broken"](runtime.now_ts()) == [])
 
 # intakeのCodexキュー投入で約束が発行される
 (SCRATCH / "state" / "promises.jsonl").unlink()
@@ -150,7 +202,7 @@ gd = {"__file__": D, "__name__": "ds_mod"}
 exec(compile(open(D).read(), D, "exec"), gd)
 runtime.save_json(convo.MEM_FILE, {"ledger": [
     {"ts": now, "dt": "07-29 10:00", "ch": MGMT, "root": "1.0", "action": "answer",
-     "reply": "Issueに登録し、Codexに回します。"},
+     "reply": "Issueに登録し、Codexに回します。"},  # ゲートが防ぐ側＝監査では誤報にしない
     {"ts": now, "dt": "07-29 10:05", "ch": MGMT, "root": "2.0", "action": "file",
      "reply": "登録しました！"},
     {"ts": now, "dt": "07-29 10:06", "ch": MGMT, "root": "3.0", "action": "file",
@@ -158,8 +210,9 @@ runtime.save_json(convo.MEM_FILE, {"ledger": [
 runtime.save_json("chiaki_intake.json", {"items": {
     "a": {"thread_root": "2.0", "status": "filed", "page_urls": ["http://x"]}}})
 text = gd["build"](now)
-check("15 integrity line reports violations", "発話整合: 要確認2件" in text
-      and "answerに実行主張" in text and "起票URLの裏付けなし" in text)
+check("15 integrity line: file without filing flagged only",
+      "発話整合: 要確認1件" in text and "起票URLの裏付けなし" in text
+      and "answerに実行主張" not in text)
 runtime.save_json(convo.MEM_FILE, {"ledger": []})
 check("15 clean day -> no line", "発話整合" not in gd["build"](now))
 

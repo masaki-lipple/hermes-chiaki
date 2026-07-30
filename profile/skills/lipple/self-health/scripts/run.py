@@ -191,25 +191,34 @@ def _ruling_swallowed(now: float) -> list[str]:
     return warns
 
 
+_PENDING_WARNED: list = []  # 警告の記録は#8902への投稿成立後（先書きは投稿失敗で警告が永久消失する）
+
+
 def _promises_broken(now: float) -> list[str]:
     """約束の履行チェック（整合パック14・2026-07-29 戸田GO）。「このスレッドに報告します」型の
     定型約束（promises.jsonl・intake/codex-runnerが発行、報告投稿時にfulfillを記録）が期限を過ぎて
-    未履行なら警告する。警告は約束ごとに1回（warned行で冪等）。"""
+    未履行なら警告する。fulfill/warnedは約束の発行時刻以降のものだけ有効＝同一スレッドの2回目以降の
+    約束（continue指示）が過去の履行にマスクされない（2026-07-29 敵対検証で確定した穴）。"""
     rows = runtime.read_jsonl("promises.jsonl")
-    fulfilled = {(r.get("ch"), r.get("root")) for r in rows if r.get("kind") == "fulfill"}
-    warned = {(r.get("ch"), r.get("root")) for r in rows if r.get("kind") == "warned"}
+    fulfills = [r for r in rows if r.get("kind") == "fulfill"]
+    warneds = [r for r in rows if r.get("kind") == "warned"]
     warns = []
     for r in rows:
         if r.get("kind") != "codex_report":
             continue
-        key = (r.get("ch"), r.get("root"))
-        if key in fulfilled or key in warned or now < float(r.get("due") or 0):
+        at = float(r.get("at") or 0)
+
+        def _covers(x):
+            return (x.get("ch") == r.get("ch") and x.get("root") == r.get("root")
+                    and float(x.get("at") or 0) >= at)
+
+        if (any(_covers(f) for f in fulfills) or any(_covers(w) for w in warneds)
+                or now < float(r.get("due") or 0)):
             continue
         warns.append(f"「このスレッドに報告します」が期限を過ぎて未履行: ch={r.get('ch')} "
                      f"thread={r.get('root')}（Codexの実行かキューの詰まりを確認）")
-        warned.add(key)
-        runtime.append_jsonl("promises.jsonl", {"at": now, "kind": "warned",
-                                                "ch": r.get("ch"), "root": r.get("root")})
+        _PENDING_WARNED.append({"kind": "warned", "ch": r.get("ch"), "root": r.get("root")})
+        warneds.append({"ch": r.get("ch"), "root": r.get("root"), "at": now})  # 同一実行内の重複防止
     return warns
 
 
@@ -232,10 +241,16 @@ def main() -> None:
     body = "\n".join(f"• {w}" for w in warns)
     text = (f"<@{runtime.TODA}>\n毎朝の自己点検で異常を検知しました。\n\n{body}\n\n"
             "Claude Codeのセッションで原因を調査・修正してください。")
+    posted = None
     try:
-        source.post_message(runtime.CH_CHIAKI_MGMT, text)
+        posted = source.post_message(runtime.CH_CHIAKI_MGMT, text)
     except Exception as e:
         print(f"[self-health] post failed: {e}")
+    if isinstance(posted, dict) and (posted.get("ts") or posted.get("dry")):
+        # 警告が実際に届いたときだけwarned化＝投稿失敗なら翌朝もう一度警告（先書き禁止の型）
+        for w in _PENDING_WARNED:
+            runtime.append_jsonl("promises.jsonl", {**w, "at": now})
+    _PENDING_WARNED.clear()
     print(f"[self-health] warns={len(warns)}")
 
 
