@@ -194,6 +194,20 @@ def _ruling_swallowed(now: float) -> list[str]:
 _PENDING_WARNED: list = []  # 警告の記録は#8902への投稿成立後（先書きは投稿失敗で警告が永久消失する）
 
 
+def _llm_dead(now: float) -> list[str]:
+    """Anthropic API（Haiku/Opus＝課金側）の全滅検知（2026-08-06 実障害: クレジット残高切れで
+    8/3から3日間、誤字スキャン停止・リマインド/PDCA文面の固定文化に気づけなかった）。
+    前営業日9時以降の呼び出しが3回以上あり全て失敗なら警告（理由の本文つき）。"""
+    start = _last_workday_9am(now)
+    rows = [r for r in runtime.read_jsonl("llm_usage.jsonl")
+            if float(r.get("ts") or 0) >= start and r.get("fn") in ("haiku", "opus")]
+    if len(rows) >= 3 and all(not r.get("ok") for r in rows):
+        note = (rows[-1].get("note") or "不明")[:120]
+        return [f"Anthropic API呼び出しが前営業日から全滅している（{len(rows)}回連続失敗・"
+                f"直近の理由: {note}）。クレジット残高またはAPIキーの確認が必要です"]
+    return []
+
+
 def _promises_broken(now: float) -> list[str]:
     """約束の履行チェック（整合パック14・2026-07-29 戸田GO）。「このスレッドに報告します」型の
     定型約束（promises.jsonl・intake/codex-runnerが発行、報告投稿時にfulfillを記録）が期限を過ぎて
@@ -234,6 +248,7 @@ def main() -> None:
     warns += _apply_stale(now)
     warns += _ruling_swallowed(now)
     warns += _promises_broken(now)
+    warns += _llm_dead(now)
     runtime.save_json(STATE, st)
     if not warns:
         print("[self-health] ok")

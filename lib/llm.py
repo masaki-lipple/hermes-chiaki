@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -116,7 +117,16 @@ def _call(model: str, user: str, system: str, max_tokens: int, timeout: int = 30
         data=json.dumps(body).encode(),
         headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                  "content-type": "application/json"})
-    res = json.load(urllib.request.urlopen(req, timeout=timeout))
+    try:
+        res = json.load(urllib.request.urlopen(req, timeout=timeout))
+    except urllib.error.HTTPError as e:
+        # エラー本文を例外へ含める（2026-08-06 実障害: クレジット残高切れの400が「Bad Request」と
+        # しか記録されず、原因特定まで3日ぶん盲目だった。本文には credit balance 等の理由が入っている）
+        try:
+            detail = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            detail = ""
+        raise RuntimeError(f"anthropic HTTP {e.code}: {detail}") from None
     parts = [b.get("text", "") for b in res.get("content", []) if b.get("type") == "text"]
     return "".join(parts).strip()
 
@@ -128,7 +138,7 @@ def haiku(user: str, system: str | None = None, max_tokens: int = 150) -> str:
     try:
         out = _call(MODEL_HAIKU, user, sys_prompt, max_tokens)
     except Exception as e:
-        _track("haiku", "Haiku 4.5", t0, False, len(user) + len(sys_prompt), 0, type(e).__name__)
+        _track("haiku", "Haiku 4.5", t0, False, len(user) + len(sys_prompt), 0, f"{type(e).__name__}: {e}"[:150])
         raise
     _mark("Haiku 4.5")
     _track("haiku", "Haiku 4.5", t0, True, len(user) + len(sys_prompt), len(out))
@@ -142,7 +152,7 @@ def opus(user: str, system: str = "", max_tokens: int = 1024) -> str:
     try:
         out = _call(MODEL_OPUS, user, sys_prompt, max_tokens, timeout=90)
     except Exception as e:
-        _track("opus", "Opus 4.8", t0, False, len(user) + len(sys_prompt), 0, type(e).__name__)
+        _track("opus", "Opus 4.8", t0, False, len(user) + len(sys_prompt), 0, f"{type(e).__name__}: {e}"[:150])
         raise
     _mark("Opus 4.8")
     _track("opus", "Opus 4.8", t0, True, len(user) + len(sys_prompt), len(out))
@@ -198,7 +208,7 @@ def gpt(user: str, system: str | None = None, max_tokens: int = 450, timeout: in
         raise RuntimeError("gpt empty response")
     except Exception as e:
         print(f"[llm] gpt failed -> haiku fallback: {type(e).__name__}: {e}")
-        _track("gpt", GPT_LABEL, t0, False, len(user) + len(sys_prompt), 0, type(e).__name__)
+        _track("gpt", GPT_LABEL, t0, False, len(user) + len(sys_prompt), 0, f"{type(e).__name__}: {e}"[:150])
         _note_gpt_fallback(str(e))
         t1 = time.time()
         out = _call(MODEL_HAIKU, user, sys_prompt, max_tokens)

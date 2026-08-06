@@ -85,8 +85,10 @@ def build(now: float) -> str:
     usage = [r for r in runtime.read_jsonl("llm_usage.jsonl") if float(r.get("ts") or 0) >= d0]
     if usage:
         per = Counter(r.get("model") for r in usage)
+        fails = sum(1 for r in usage if not r.get("ok", True))
         lines.append(f"• LLM呼び出し: {len(usage)}回（"
-                     + "・".join(f"{m}={n}" for m, n in per.most_common()) + "）")
+                     + "・".join(f"{m}={n}" for m, n in per.most_common())
+                     + (f"）・失敗{fails}回" if fails else "）"))
 
     # 発話整合の監査（整合パック15・2026-07-29）: きょうの会話発話を決定論で突合。違反ゼロ＝行なし。
     # 会話台帳のreplyはゲート適用前の文面のため、実行主張の文言チェックはしない（ゲートが防いだ分まで

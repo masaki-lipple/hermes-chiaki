@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 from pathlib import Path
 
@@ -57,7 +58,18 @@ def _query(db_id: str, token: str) -> list[dict]:
             body["start_cursor"] = cursor
         req = urllib.request.Request(f"https://api.notion.com/v1/databases/{db_id}/query",
                                      data=json.dumps(body).encode(), headers=H, method="POST")
-        res = json.load(urllib.request.urlopen(req, timeout=30))
+        res = None
+        for i, wait in enumerate((0, 8, 20)):  # 一時障害のリトライ（2026-08-05 実障害:
+            # ConnectionResetErrorで同期ごとクラッシュ。notion._apiと同じ粘り）
+            if wait:
+                time.sleep(wait)
+            try:
+                res = json.load(urllib.request.urlopen(req, timeout=30))
+                break
+            except Exception as e:
+                if i == 2:
+                    raise
+                print(f"[sync] query retry({i + 1}/2) db={db_id[:8]}: {type(e).__name__}: {e}")
         rows += res.get("results", [])
         if not res.get("has_more"):
             break

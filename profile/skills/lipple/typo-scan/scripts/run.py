@@ -117,7 +117,14 @@ def main():
             print(f"[typo-scan] gather failed ch={ch}: {e}")  # ch単位で失敗隔離
             continue
         if msgs:
-            for h in _detect(msgs[:MAX_MSGS], known):
+            try:
+                hits = _detect(msgs[:MAX_MSGS], known)
+            except Exception as e:
+                # LLM不通（2026-08-06 実障害: クレジット残高切れの400で走査ごと落ち、カーソル未保存の
+                # まま3日停止）＝このチャンネルはカーソル据え置きで次回再試行し、走査自体は続ける
+                print(f"[typo-scan] detect failed ch={ch}: {e} -> カーソル据え置きで次回再試行")
+                continue
+            for h in hits:
                 try:
                     i = int(h.get("i"))
                 except (TypeError, ValueError):

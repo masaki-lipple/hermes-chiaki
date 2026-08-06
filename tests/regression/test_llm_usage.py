@@ -55,8 +55,10 @@ check("haiku failure raises", raised)
 rows = runtime.read_jsonl("llm_usage.jsonl")
 kinds = [(r["fn"], r["ok"], r.get("note", "")) for r in rows]
 check("usage rows recorded", ("gpt", True, "") in kinds and ("haiku", True, "") in kinds
-      and ("gpt", False, "RuntimeError") in kinds and ("haiku", True, "代替") in kinds
-      and ("haiku", False, "RuntimeError") in kinds and len(rows) == 5)
+      and any(fn == "gpt" and not okf and note.startswith("RuntimeError") for fn, okf, note in kinds)
+      and ("haiku", True, "代替") in kinds
+      and any(fn == "haiku" and not okf and note.startswith("RuntimeError") for fn, okf, note in kinds)
+      and len(rows) == 5)
 check("caller detected", all(r.get("caller") == "test_llm_usage" for r in rows))
 check("timing and volume recorded", all("ms" in r and r.get("in", 0) > 0 for r in rows))
 
