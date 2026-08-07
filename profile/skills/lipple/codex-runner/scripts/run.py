@@ -200,6 +200,21 @@ def _process_threads() -> None:
                if m.get("user_id") == runtime.TODA and float(m.get("ts_float") or 0) > last]
         if not new:
             continue
+        # 戸田→他メンバー宛（@松永等・Chiaki宛メンション無し）は会話対象外（2026-08-07 戸田指摘:
+        # 会話発の登録スレッドは業務スレッドと同居する＝人間同士の会話に割り込まない）
+        def _to_others(mm):
+            ids = set(re.findall(r"<@(U[A-Z0-9]+)>", mm.get("text") or ""))
+            return bool(ids) and runtime.CHIAKI_SELF not in ids
+        others = [m for m in new if _to_others(m)]
+        new = [m for m in new if not _to_others(m)]
+        if not new:
+            t["last_seen_ts"] = float(others[-1].get("ts_float") or now)
+            changed = True
+            ledger.record(ledger.event_id(tch, others[-1].get("ts") or ""), ch=tch, thread_root=tts,
+                          ts=others[-1].get("ts") or "", kind="codex", owner="codex",
+                          status="skipped", note="宛先が他メンバー")
+            print(f"[codex-runner] thread {tts} -> 他メンバー宛の会話のみ=スキップ")
+            continue
         text = "\n".join((m.get("text") or "") for m in new)
         # intakeの確認ターンが進行中のスレッドは触らない＝承認（「それもOK」）の宙吊り防止
         # （2026-07-14 レビュー確定バグ）。last_seenは進めない＝intakeが応答した後、
@@ -299,6 +314,12 @@ def _process_threads() -> None:
                     _done("skipped")  # 案も返事も無い＝静観として既読化（無限リトライ防止）
                 continue
             if action == "retract":
+                try:  # このスレッド発の未実行Codexキューも取り消す（2026-08-07 実バグの再発防止）
+                    if any(str(q.get("thread")) == tts for q in runtime.read_jsonl("codex_queue.jsonl")):
+                        runtime.append_jsonl("codex_cancel.jsonl",
+                                             {"at": runtime.now_ts(), "ch": tch, "thread": tts})
+                except Exception:
+                    pass
                 _reply(tts, reply or "失礼しました！さきほどの投稿は誤りでした。", ch=tch)
                 _done("replied")
                 print(f"[codex-runner] thread {tts} -> retract")
@@ -432,6 +453,21 @@ def main():
 
     item = queue[0]
     key = str(item.get("ts"))
+    # 取り消しの反映（2026-08-07 実バグ: 「いやCodexまわさなくていい」の後もキューが残っていて
+    # 実行された＝retractがcodex_cancel.jsonlに記録し、ここで実行前に確認する）
+    if item.get("thread") and any(
+            c.get("thread") == item.get("thread") and float(c.get("at") or 0) >= float(item.get("ts") or 0)
+            for c in runtime.read_jsonl("codex_cancel.jsonl")):
+        st["done"][key] = {"status": "cancelled", "ts": runtime.now_ts()}
+        runtime.save_json("codex_runner.json", st)
+        try:
+            source.post_thread_reply(item.get("channel") or CH, item["thread"],
+                                     f"<@{runtime.CHIAKI_SELF}>\nこの依頼は取り消されたため、"
+                                     "Codexでは実行しません。")
+        except Exception:
+            pass
+        print("[codex-runner] cancelled by retract")
+        return
     # 二重ゲート: intake 側も戸田さん限定だが、キュー改ざん・別経路投入に備えここでも検証
     if item.get("requested_by") != runtime.TODA:
         st["done"][key] = {"status": "rejected", "ts": runtime.now_ts()}

@@ -897,6 +897,9 @@ def _handle_confirm(it: dict, m: dict, ch: str, root: str):
 
 
 _CODEX_RE = re.compile(r"codex", re.I)
+# Codex起動の明示指示（2026-08-07 戸田「イシューに追加するだけでいいのにCodexまわしはじめた、
+# これ危険すぎる」＝起票のみが既定。実装の自動開始は、戸田さんの実文にこの明示があるときだけ）
+_CODEX_GO_RE = re.compile(r"codex|コデックス|実装(して|お願い|を?進め|まで)|コードで(直|対応)", re.I)
 
 
 def _maybe_enqueue_codex(it: dict, m: dict, ch: str, root: str, ok: list, force=None) -> str:
@@ -1087,11 +1090,11 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
             extra, it["root_edited"] = "\n指摘のあった投稿も直しました。", True
     if urls and not ng:  # 全件成功
         it["status"], it["page_urls"] = "filed", urls
-        # issue のコード変更は既定でそのまま Codex 実装へ（エージェントの codex 判断・未指定は issue なら true）
-        force = d.get("codex")
-        if force is None:
-            force = any(p.get("type") == "issue" for p, _ in ok) or None
-        codex_note = _maybe_enqueue_codex(it, m, ch, root, ok, force=force)
+        # Codex起動＝戸田さんの実文に明示（Codex/実装して等）があるときだけの決定論判定
+        # （2026-08-07 戸田「これ危険すぎる」。旧既定=issueなら自動でCodexへ、はGPTの解釈だけで
+        # 実装が走り出す構造だった。「いったんイシューにいれておこう」=起票のみ、が新しい既定）
+        explicit = _CODEX_GO_RE.search((m.get("text") or "") + " " + (it.get("mention_text") or ""))
+        codex_note = _maybe_enqueue_codex(it, m, ch, root, ok, force=bool(explicit))
         if codex_note and "codex" in reply.lower():
             codex_note = ""  # 返事が既にCodex行きを伝えている＝定型の重ね掛けをしない（「Codexに回します。
             # Codexに実装させます！」のような機械的な継ぎ足し文の解消・2026-07-13 戸田「意思疎通がうまくとれない」）
@@ -1285,6 +1288,12 @@ def _handle_retract(m: dict, ch: str, root: str) -> int:
                 closed += 1
         if closed:
             runtime.save_json("pending_approvals.json", pend)
+    try:  # このスレッド発の未実行Codexキューも取り消す（2026-08-07 実バグ: 「いやCodexまわさなくて
+        # いい」への取り消しが注記まで正しく動いたのに、キューが残っていてCodexが実行された）
+        if any(str(q.get("thread")) == root for q in runtime.read_jsonl("codex_queue.jsonl")):
+            runtime.append_jsonl("codex_cancel.jsonl", {"at": runtime.now_ts(), "ch": ch, "thread": root})
+    except Exception as e:
+        print(f"[intake] codex_cancel記録失敗（続行）: {e}")
     try:
         _reply(ch, root, ans or "失礼しました！さきほどの投稿は誤りだったので取り消しました。")
     except Exception as e:  # 注記・クローズは成立済み＝返信失敗で例外を上げると再試行が注記を多重追記する

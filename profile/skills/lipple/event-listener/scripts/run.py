@@ -8,6 +8,7 @@ crontab の apply-ruling とは flock で排他（二重処理なし）。常駐
 """
 import fcntl
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -15,6 +16,14 @@ sys.path.insert(0, os.environ.get("HERMES_LIB") or str(Path(__file__).resolve().
 from lib import ledger, runtime  # noqa: E402
 
 LOCK_PATH = "/tmp/chiaki_apply.lock"  # crontab の flock と共有
+
+
+def _mentions_only_others(text: str) -> bool:
+    """@メンションがあり、そのどれもChiaki AI宛でない＝他メンバー宛の会話（2026-08-07 戸田
+    「Yu MatsunagaへのメンションをなぜかChiaki AIが返してくる」＝会話発のCodex登録スレッドが
+    業務スレッドと同居し、戸田→松永の会話にChiaki AIが割り込んでいた）。"""
+    ids = set(re.findall(r"<@(U[A-Z0-9]+)>", text or ""))
+    return bool(ids) and runtime.CHIAKI_SELF not in ids
 WATCH_MGMT = runtime.CH_CHIAKI_MGMT            # 戸田さんの裁定（提案スレッド）
 
 # apply-ruling の main を読み込む（このプロセス内で実行。__main__ では起動しない）
@@ -162,7 +171,9 @@ def main():
             # 承認（「それもOK」）を宙吊りにしない（2026-07-14 レビュー確定バグ）
             action = "intake"
         elif user == runtime.TODA and _is_codex_thread(ch, tts):
-            action = "codex"   # Codex 報告スレッド内は @メンション有無に関わらず対話として扱う
+            if _mentions_only_others(ev.get("text") or ""):
+                return  # 戸田→他メンバー宛（@松永等）の会話＝Chiaki AIは割り込まない
+            action = "codex"   # Codex 報告スレッド内は @メンション無し/Chiaki宛を対話として扱う
         elif user == runtime.TODA and etype == "app_mention":
             # メンション付きでも裸の裁定語（GO/OK/却下等）は apply-ruling の領分。intake側は
             # _is_bare_ruling でスキップするため、ここで intake へ回すとイベント到着順次第で
