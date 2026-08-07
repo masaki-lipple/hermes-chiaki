@@ -162,6 +162,11 @@ def main():
         if ev.get("user") == runtime.CHIAKI_SELF:
             return
         ch, tts, user = ev.get("channel"), ev.get("thread_ts"), ev.get("user")
+        # 戸田→他メンバー宛のみ（@松永等・Chiaki宛なし）の発話には全経路で応答しない
+        # （2026-08-07 戸田「また干渉してくる」＝Codex経路は塞いだが、同スレッドに確認ターンが
+        # 残っていてintakeの確認ターン最優先ルーティングが@松永宛の会話を拾い続けた）
+        if user == runtime.TODA and etype == "message" and _mentions_only_others(ev.get("text") or ""):
+            return
         # 何をするか先に決め、actionable な時だけ event_id で重複排除（message/app_mention の二重も吸収）。
         # 戸田さんの明示的な @メンションは intake 最優先（監査確定：促しスレッド内の @メンションが
         # _is_relevant で apply-ruling に回り黙殺されていた）。メンション無しの裁定返信は従来どおり apply。
@@ -171,9 +176,8 @@ def main():
             # 承認（「それもOK」）を宙吊りにしない（2026-07-14 レビュー確定バグ）
             action = "intake"
         elif user == runtime.TODA and _is_codex_thread(ch, tts):
-            if _mentions_only_others(ev.get("text") or ""):
-                return  # 戸田→他メンバー宛（@松永等）の会話＝Chiaki AIは割り込まない
             action = "codex"   # Codex 報告スレッド内は @メンション無し/Chiaki宛を対話として扱う
+            # （他メンバー宛のみの発話は上の全経路ガードで除外済み）
         elif user == runtime.TODA and etype == "app_mention":
             # メンション付きでも裸の裁定語（GO/OK/却下等）は apply-ruling の領分。intake側は
             # _is_bare_ruling でスキップするため、ここで intake へ回すとイベント到着順次第で

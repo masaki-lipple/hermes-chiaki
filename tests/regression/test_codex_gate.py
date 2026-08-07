@@ -119,6 +119,35 @@ check("② only-others detection", ns["_mentions_only_others"]("<@U09T44VEZM1> �
       and not ns["_mentions_only_others"](f"<@{runtime.CHIAKI_SELF}> これ進めて")
       and not ns["_mentions_only_others"]("メンション無しの返信"))
 
+# ════ ②b intakeの全経路ガード（確認ターン経由の干渉の再発防止・2026-08-07「また干渉してくる」） ════
+g3 = {"__file__": R, "__name__": "intake_mod3"}
+exec(compile(open(R).read(), R, "exec"), g3)
+runtime.save_json("pending_approvals.json", {"items": {}})
+runtime.save_json("chiaki_intake.json", {"items": {"70.0": {
+    "status": "awaiting_confirm", "channel": "CY", "thread_root": "70.0",
+    "last_seen_ts": "70.0", "proposed_at": now,
+    "proposals": [{"type": "issue", "要約": "x"}]}}})
+threads_g3 = {"70.0": [
+    {"ts": "70.0", "ts_float": now - 300, "user_id": runtime.CHIAKI_SELF, "text": "Issueとして処理しますか？"},
+    {"ts": "71.0", "ts_float": now - 50, "user_id": runtime.TODA,
+     "text": "<@U09T44VEZM1> こっちもですね！これ先方サーバーなのできいてみます！"}]}
+source.read_thread = lambda ch, root: threads_g3.get(root, [])
+runtime.append_jsonl("exec_ledger.jsonl", {"id": "CY:71.0", "at": now - 40, "owner": "intake",
+                                           "status": "received", "ch": "CY", "ts": "71.0",
+                                           "thread_root": "70.0"})
+runtime.save_json("tuning_cursor.json", {"__scan__": now})
+handled = []
+g3["_handle_confirm"] = lambda it, m, ch, root: handled.append(m["ts"]) or 1
+g3["_handle_propose"] = lambda m, ch, root, items: handled.append(m["ts"]) or 1
+convo.already_replied = lambda ch, ts: False
+g3["main"]()
+e = ledger.entry("CY:71.0")
+items_after = runtime.load_json("chiaki_intake.json", {}).get("items", {})
+check("②b intake skips toda->others even in confirm turn",
+      not handled and e.get("status") == "skipped" and e.get("note") == "宛先が他メンバー")
+check("②b confirm-turn last_seen advanced (no rediscover loop)",
+      items_after["70.0"]["last_seen_ts"] == "71.0")
+
 # ════ ③ retractでキュー取り消し ════
 (SCRATCH / "state" / "codex_queue.jsonl").unlink(missing_ok=True)  # ①の残りを掃除＝対象を単離
 runtime.append_jsonl("codex_queue.jsonl", {"ts": str(now - 60), "requested_by": runtime.TODA,

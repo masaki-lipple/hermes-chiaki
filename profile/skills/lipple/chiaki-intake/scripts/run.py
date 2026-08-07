@@ -628,6 +628,13 @@ def _is_bare_ruling(text: str) -> bool:
 _REJECT_LEAD_RE = re.compile(r"^(?:却下|見送り|ボツ|ぼつ|NG|ng|やめ)[。、．.！!\s　]+\S")
 
 
+def _mentions_only_others(text: str) -> bool:
+    """@メンションがあり、そのどれもChiaki AI宛でない＝他メンバー宛の会話（2026-08-07 戸田
+    「また干渉してくる」＝確認ターンが残ったスレッドで戸田→松永宛の会話にまで応答していた）。"""
+    ids = set(re.findall(r"<@(U[A-Z0-9]+)>", text or ""))
+    return bool(ids) and runtime.CHIAKI_SELF not in ids
+
+
 def _is_ruling_message(text: str) -> bool:
     """apply-ruling が処理する発話か＝裸の裁定語 または 理由付き却下（「却下。これは本当の人物名。」）。
     2026-07-23 戸田「（却下+理由は）次回指摘しないようにする仕組みをつくる」＝applyが却下として裁定し
@@ -1403,6 +1410,18 @@ def main():
     # カーソルを止めない＝後続の処理済み発話の再発見も起きない（監査②b）。
     maxts, failed, acted = {}, set(), 0
     for m, root, ch, _hint in uniq:
+        if (_hint != "escalate" and m.get("user_id") == runtime.TODA
+                and _mentions_only_others(m.get("text") or "")):
+            # 戸田→他メンバー宛のみの発話＝応答しない（全経路の共通ルール・2026-08-07。
+            # listener欠落時の走査・台帳経路でも同じ判定＝経路によって挙動が変わらない）
+            prior = ledger.entry(ledger.event_id(ch, m["ts"])).get("status")
+            if prior in (None, "received", "failed"):
+                ledger.record(ledger.event_id(ch, m["ts"]), ch=ch, thread_root=root, ts=m["ts"],
+                              kind="intake", owner="intake", status="skipped", note="宛先が他メンバー")
+            if (ch, m["ts"]) in scan_keys:
+                maxts[ch] = m["ts_float"]
+            _advance_item_seen(items, ch, root, m["ts"])
+            continue
         if _hint != "escalate" and ledger.entry(ledger.event_id(ch, m["ts"])).get("status") in (
                 "handled", "skipped", "ruled"):
             # 台帳で終端済みの発話は再処理しない（2026-07-23 監査レビュー: 台帳経路で処理済みの発話を
