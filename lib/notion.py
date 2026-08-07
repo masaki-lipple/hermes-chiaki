@@ -151,6 +151,18 @@ def update_issue(url: str, status: str = "", branch: str = "") -> bool:
     return update_page_props(pid, props) if props else False
 
 
+TASK_DB = "331980d4f840800b8bdef6669422aeb1"  # 🎯 タスク_DB（読み取り＋メインタスクrelationの設定のみ）
+
+
+def set_main_task(task_page_id: str, main_page_id: str) -> bool:
+    """タスクの「メインタスク」relation 1列だけを設定（2026-08-07 戸田GO＝自然言語での親子付け替え。
+    書き込み範囲はこの1列に限定＝status/sync_source等は触らない・行の新規作成もしない）。
+    成立（PATCH成功）を検証して返す＝「設定しました」の宣言は呼び側がTrueを確認してから。"""
+    if not (task_page_id and main_page_id):
+        return False
+    return update_page_props(task_page_id, {"メインタスク": {"relation": [{"id": main_page_id}]}})
+
+
 def update_page_props(page_id: str, props: dict) -> bool:
     """既存ページのプロパティを更新（PATCH）。props は Notion API 形式。成功で True。"""
     if not _token():

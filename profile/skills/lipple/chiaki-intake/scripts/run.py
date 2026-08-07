@@ -792,6 +792,11 @@ def _propose_agent(m: dict, ch: str, root: str, items: dict):
         if not bills:
             return None
         return _await(items, m, ch, root, bills, reply_text=reply)
+    if action == "set_main_task":
+        bills = [p for p in _valid_agent_bills(d.get("proposals")) if p.get("type") == "main_task"]
+        if not bills:
+            return None
+        return _await(items, m, ch, root, bills[:1], reply_text=reply)  # 確認ターンへ（実行はOK後）
     if action == "retract":
         acted = _handle_retract(m, ch, root)
         _log("retract", ch, root, m)
@@ -846,9 +851,43 @@ def _propose_agent(m: dict, ch: str, root: str, items: dict):
     return None
 
 
+_REVIVE_RE = re.compile(r"指摘で|出して|お願い|進めて|やって|もう一度|再開", re.I)
+
+
+def _maybe_revive(m: dict, ch: str, root: str):
+    """失効した提案の復活（2026-08-07 戸田「これも指摘で！」＝失効通知は「もう一度お知らせください」
+    と案内するのに復活の仕組みが無かった）。expiredの提案スレッドで戸田さんが前向きの指示をしたら
+    pendingへ戻し、その発話をGO扱い（revive印）にする。実行はapply-rulingの通常経路（クレーム・
+    対象の生存/修正済み確認・バインディング・成立確認）＝実行者は従来どおりapply一本。"""
+    if ch != runtime.CH_CHIAKI_MGMT or not _REVIVE_RE.search(m.get("text") or ""):
+        return None
+    with runtime.approvals_lock():
+        pend = runtime.load_json("pending_approvals.json", {"items": {}})
+        it = pend.get("items", {}).get(root)
+        if not it or it.get("status") != "expired":
+            return None
+        it["status"] = "pending"
+        it["revive"] = {"ts": m["ts"], "text": (m.get("text") or "")[:200], "at": runtime.now_ts()}
+        runtime.save_json("pending_approvals.json", pend)
+    _reply(ch, root, "この提案を再開しました！このまま対象スレッドへ修正依頼を出します。")
+    _log("revive", ch, root, m)
+    try:  # apply-rulingを即起動（cron待ちで最大1分黙らせない。多重はflockが防ぐ）
+        import subprocess
+        script = os.path.join(os.environ.get("HERMES_PROFILE_DIR", ""), "scripts/apply_ruling.py")
+        if os.path.isfile(script):
+            subprocess.Popen([sys.executable, script], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+    return 1
+
+
 def _handle_propose(m: dict, ch: str, root: str, items: dict) -> int:
     if m["ts"] in items:  # 既に提案/起票/処理済みの同一メンション＝再処理時に二重投稿しない（冪等）
         return 0
+    rev = _maybe_revive(m, ch, root)
+    if rev:
+        return rev
     r = _propose_agent(m, ch, root, items)  # 会話コア（Phase A+B）が主経路
     if r is not None:
         convo.commit()  # Phase C: 採用した判断だけ会話台帳へ（スレッド跨ぎの記憶）
@@ -980,9 +1019,82 @@ def _valid_agent_bills(raw) -> list:
     """会話コアが返した起票案の検証（type/要約必須・既知kindへ正規化）。"""
     outp = []
     for c in raw or []:
-        if isinstance(c, dict) and c.get("type") in ("issue", "rule") and (c.get("要約") or "").strip():
+        if (isinstance(c, dict) and c.get("type") in ("issue", "rule", "main_task")
+                and (c.get("要約") or "").strip()):
             outp.append(_norm_item({**c, "確信度": c.get("確信度", 0.9)}))
-    return [c for c in outp if c.get("type") in ("issue", "rule")]
+    return [c for c in outp if c.get("type") in ("issue", "rule", "main_task")]
+
+
+_NOTION_URL_RE = re.compile(r"https?://(?:www\.)?(?:app\.)?notion\.(?:so|com)/[^\s>|]+")
+_SLACK_LINK_RE = re.compile(r"archives/([A-Z0-9]+)/p(\d{10})(\d{6})")
+
+
+def _notion_task_url_in_thread(ch: str, root: str) -> str:
+    """スレッド内のタスクAI（GCPタスクAI）返信からNotionタスクURLを拾う（決定論）。"""
+    try:
+        for x in source.read_thread(ch, root):
+            if x.get("user_id") == runtime.GCP_TASK_BOT:
+                mm = _NOTION_URL_RE.search(x.get("text") or "")
+                if mm:
+                    return mm.group(0)
+    except Exception:
+        pass
+    return ""
+
+
+def _page_id_from_ref(ref: str) -> str:
+    """Notion URL／Slackスレッドリンク／タスク名からページIDを解決。解決できなければ空＝推測で書かない
+    （メインタスク設定・2026-08-07 戸田GO）。"""
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+    if "notion" in ref:
+        return notion._page_id_from_url(ref)
+    sm = _SLACK_LINK_RE.search(ref)
+    if sm:  # Slackスレッドリンク＝そのスレッドのタスクAI返信からNotion URLを辿る
+        url = _notion_task_url_in_thread(sm.group(1), f"{sm.group(2)}.{sm.group(3)}")
+        return notion._page_id_from_url(url) if url else ""
+    try:  # タスク名＝タスク_DBタイトルの完全一致 or 一意な部分一致だけ（曖昧なら解決しない）
+        rows = notion.query_database_titles(notion.TASK_DB)
+        if rows:
+            if ref in rows:
+                return rows[ref]["id"]
+            subs = [v for t, v in rows.items() if ref in t]
+            if len(subs) == 1:
+                return subs[0]["id"]
+    except Exception:
+        pass
+    return ""
+
+
+def _exec_main_task(it: dict, p: dict, m: dict, ch: str, root: str) -> int:
+    """メインタスク設定の実行（2026-08-07 戸田GO＝「Chiaki AIはGPTがあるので自然言語を理解できます」。
+    書き込みは notion.set_main_task＝「メインタスク」relation 1列のみ。解決できないときは推測で書かず
+    URLを聞き返して確認待ちを維持。PATCHの成立を検証してから「設定しました」と宣言（整合パック⑫）。"""
+    blob = f"{m.get('text') or ''}\n{p.get('main_url') or ''}"
+    task_id = (_page_id_from_ref(p.get("task_url") or "")
+               or _page_id_from_ref(_notion_task_url_in_thread(ch, root)))
+    main_id = _page_id_from_ref(p.get("main_url") or "") or _page_id_from_ref(p.get("main_hint") or "")
+    if not main_id:  # 最後の手段: 発話内のリンク（Notion/Slackどちらでも）から拾う
+        for cand in _NOTION_URL_RE.findall(blob) + [s.group(0) for s in _SLACK_LINK_RE.finditer(blob)]:
+            pid = _page_id_from_ref(cand)
+            if pid and pid != task_id:
+                main_id = pid
+                break
+    if not task_id or not main_id:
+        missing = "対象タスク" if not task_id else "メインタスク"
+        _reply(ch, root, f"{missing}を特定できませんでした。NotionのURL（またはタスク投稿の"
+                         "スレッドリンク）をこのスレッドに貼ってもらえますか？推測では設定しません。")
+        return 1  # awaiting維持＝次の返信で再解決
+    if not notion.set_main_task(task_id, main_id):
+        _reply(ch, root, "Notionへの書き込みに失敗しました。少し時間をおいて、もう一度お願いできますか？"
+                         "（まだ何も変更していません）")
+        return 1  # awaiting維持＝再試行できる
+    it["status"] = "filed"
+    it["main_task_set"] = {"task": task_id, "main": main_id, "at": runtime.now_ts()}
+    _reply(ch, root, "メインタスクを設定しました！")
+    _log("main_task", ch, root, m, task=task_id, main=main_id)
+    return 1
 
 
 def _confirm_agent(it: dict, m: dict, ch: str, root: str):
@@ -990,13 +1102,14 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
     Phase A+B 2026-07-10）、実行はここの決定論ゲート（起票は検証済みの提案のみ・編集は _maybe_edit_root・
     Codexは _maybe_enqueue_codex・権限/冪等性は従来どおり）。出力が壊れていたら None＝従来ロジックへ。"""
     proposals = it.get("proposals") or ([it["proposal"]] if it.get("proposal") else [])
-    bills = [p for p in proposals if p.get("type") in ("issue", "rule")]
+    bills = [p for p in proposals if p.get("type") in ("issue", "rule", "main_task")]
     filed = it.get("status") == "filed"
     count = it.get("propose_count", 1)
     xfacts = [f"再提示回数: {count}回目（4回を超えたら再提案せず、登録か見送りの判断を仰ぐ）"]
     if bills and not filed:
         xfacts.append("提示中の起票案: " + json.dumps(
-            [{k: p.get(k) for k in ("type", "issue_kind", "rule_kind", "要約", "詳細", "routine")}
+            [{k: p.get(k) for k in ("type", "issue_kind", "rule_kind", "要約", "詳細", "routine",
+                                    "task_url", "main_url", "main_hint")}
              for p in bills], ensure_ascii=False))
     d = convo.decide(ch, root, m, mode="filed" if filed else "confirm", extra_facts=xfacts)
     if not d:
@@ -1080,12 +1193,24 @@ def _confirm_agent(it: dict, m: dict, ch: str, root: str):
         _reply(ch, root, reply)
         return 1
 
+    if action == "set_main_task":  # 確認ターン中の新しいメインタスク依頼＝案を差し替えて確認し直す
+        newb = [p for p in _valid_agent_bills(d.get("proposals")) if p.get("type") == "main_task"]
+        if not newb:
+            return None
+        it["proposals"], it["status"], it["propose_count"] = newb[:1], "awaiting_confirm", 1
+        _reply(ch, root, reply)
+        _log("propose", ch, root, m)
+        return 1
+
     # action == "file"
     if filed:
         _reply(ch, root, reply)  # 登録済みの再承認＝二重登録しない（返事だけ）
         return 1
     if not bills:
         return None  # まだ案が無い状態の承認＝従来ロジック（再分類）へ
+    mt = [p for p in bills if p.get("type") == "main_task"]
+    if mt:  # メインタスク設定の承認＝起票ではなくNotionのrelation設定を実行（HITLのOK後）
+        return _exec_main_task(it, mt[0], m, ch, root)
     results = [(p, _file_issue(p, it["permalink"], ch) if p["type"] == "issue"
                 else _file_rule(p, it["permalink"])) for p in bills]
     ok = [(p, u) for p, u in results if u]
@@ -1150,6 +1275,10 @@ def _confirm_legacy(it: dict, m: dict, ch: str, root: str) -> int:
         _reply(ch, root, "わかりました、今回は見送りますね。")
         _log("cancelled", ch, root, m, 依頼元=(it.get("mention_text") or "")[:200])
         return 1
+    mt = [p for p in proposals if p.get("type") == "main_task"]
+    if v in ("go", "go_plus") and mt:
+        # メインタスク設定はGPT不通でも実行できる（解決も書き込みも決定論）＝legacyでも同じ実行へ
+        return _exec_main_task(it, mt[0], m, ch, root)
     # unclear（bills 無し）はまだ候補が定まっていない → go でも再分類
     if v in ("go", "go_plus") and bills:
         results = [(p, _file_issue(p, it["permalink"], ch) if p["type"] == "issue"

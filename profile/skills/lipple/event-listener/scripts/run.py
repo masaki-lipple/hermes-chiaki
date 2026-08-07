@@ -188,7 +188,15 @@ def main():
             else:
                 action = "intake"
         elif _is_relevant(ch, tts):
-            action = "apply"
+            # Chiaki宛メンション付きの非裁定発話は会話（intake）へ（2026-08-07 実バグ:
+            # message/app_mentionの二重配信でmessageが先に届くとこの分岐がapplyへ流し、
+            # 失効スレッドの「これも指摘で！」が会話に到達しないままsweepで終端された）
+            if (user == runtime.TODA and f"<@{runtime.CHIAKI_SELF}>" in (ev.get("text") or "")
+                    and not _gi.get("_is_ruling_message", _gi.get("_is_bare_ruling",
+                                                                  lambda t: False))(ev.get("text") or "")):
+                action = "intake"
+            else:
+                action = "apply"
         elif user == runtime.TODA and (ch in (runtime.CH_CHIAKI_MGMT, runtime.CH_CHIAKI_PDCA)
                                        or _is_intake_thread(ch, tts)):
             action = "intake"

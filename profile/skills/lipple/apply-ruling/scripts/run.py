@@ -190,17 +190,25 @@ def _rule_one(pend: dict, tts: str, it: dict) -> int:
     # ＝「GO→ありがとう」ではGOが読まれ（⑥bの意図）、「GO→やっぱり一文足して」では新しい編集指示が
     # 勝つ（⑥bの旧実装は古い裸GOが新しい編集指示に勝って未編集ドラフトを投稿する退行だった）。
     ruling_msg, verdict, payload = None, None, None
-    for mm in reversed(toda):
-        txt = mm.get("text", "")
-        v0, p0 = _classify(re.sub(r"<@U[A-Z0-9]+>", "", txt))
-        if v0 == "skip":
-            continue
-        if v0 == "interpret" and f"<@{runtime.CHIAKI_SELF}>" in txt:
-            # @メンション付きの指示は原則 intake（会話コア）の領分＝二重処理しない（2026-07-14 レビュー
-            # 確定バグ: 「@Chiaki AI この文面短くして」に intake と apply が別々に反応していた）
-            return 0
-        ruling_msg, verdict, payload = mm, v0, p0
-        break
+    rev = it.get("revive")
+    if rev and rev.get("ts"):
+        # 失効からの復活（intakeが印を付ける・2026-08-07 戸田「これも指摘で！」）＝その発話をGO扱いで
+        # 通常経路（クレーム・生存/修正済み確認・バインディング・成立確認）に乗せる
+        ruling_msg = {"ts": rev["ts"], "text": rev.get("text") or "GO"}
+        verdict, payload = "go", ""
+        it.pop("revive", None)  # 消費（成功時に_saveで永続化・投稿失敗時は保存されず次回も残る）
+    else:
+        for mm in reversed(toda):
+            txt = mm.get("text", "")
+            v0, p0 = _classify(re.sub(r"<@U[A-Z0-9]+>", "", txt))
+            if v0 == "skip":
+                continue
+            if v0 == "interpret" and f"<@{runtime.CHIAKI_SELF}>" in txt:
+                # @メンション付きの指示は原則 intake（会話コア）の領分＝二重処理しない（2026-07-14 レビュー
+                # 確定バグ: 「@Chiaki AI この文面短くして」に intake と apply が別々に反応していた）
+                return 0
+            ruling_msg, verdict, payload = mm, v0, p0
+            break
     if ruling_msg is None:
         return 0  # 実質的な発話なし（お礼・質問のみ等）＝裁定なし・保留
     ruling_text = ruling_msg.get("text", "")

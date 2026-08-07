@@ -53,6 +53,14 @@ ACTIONS = {
                  "メッセージの並び順・書式の変更）は edit_post ではなく propose（issue=コード変更）にする。",
     "company_rule": "このルールを社内レギュレーション_DB（正本）にも登録する依頼。company に "
                     '{"rule","content","category"(用字・表記|数字・英字|記号・約物|文末・語尾|表現・NG|体裁・構成),"wrong","right"}。',
+    "set_main_task": "タスクの親子関係＝メインタスクの設定・付け替えの依頼（「これのメインタスクはこれ」"
+                     "「メンタスク設定して」等・2026-08-07 戸田GO）。proposals に1件だけ: "
+                     '{"type": "main_task", "要約": "メインタスク設定: <対象>→<メイン>", '
+                     '"task_url": "対象タスクのURL（本文にあれば・無ければ空=このスレッドのタスク）", '
+                     '"main_url": "メインタスクのNotion URLかSlackスレッドリンク（本文にあれば）", '
+                     '"main_hint": "メインタスクの名前"}。'
+                     "reply は「＜対象＞のメインタスクを＜メイン＞に設定します。OKですか？」の確認質問"
+                     "（この場では設定しない＝実行はOKの後）。",
     "codex_continue": "進行中のCodex作業への追加指示・やり直し。instruction に Codex への指示を具体的に。reply は着手の一言。",
     "deploy_request": "本番反映の依頼（「反映して」等）。反映はClaude Codeのレビュー後＝その旨を reply で自然に。",
     "retract": "あなたの直前のアクション（修正依頼・通知・リマインド等）が誤り・宛先違い・不要と指摘された。"
@@ -66,9 +74,9 @@ ACTIONS = {
 }
 
 MODES = {
-    "initial": ("propose", "edit_post", "retract", "company_rule", "answer", "silent"),
-    "confirm": ("file", "revise", "cancel", "edit_post", "company_rule", "retract", "answer"),
-    "filed": ("propose", "company_rule", "retract", "edit_post", "answer"),
+    "initial": ("propose", "edit_post", "retract", "company_rule", "set_main_task", "answer", "silent"),
+    "confirm": ("file", "revise", "cancel", "edit_post", "company_rule", "set_main_task", "retract", "answer"),
+    "filed": ("propose", "company_rule", "retract", "edit_post", "set_main_task", "answer"),
     "codex_thread": ("codex_continue", "deploy_request", "retract", "company_rule", "answer", "propose"),
 }
 # codex_thread の propose: 進行中ブランチと別の新しい改善案が出たとき用。runner が確認を出し、
